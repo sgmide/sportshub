@@ -1,1 +1,140 @@
-ghh
+name: SportsHub Auto Sync
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync Sports Data
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Dependencies
+        run: |
+          if [ -f package.json ]; then
+            npm install
+          fi
+
+          npm install --no-save firebase-admin
+
+      - name: Mark Workflow Running
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+        run: |
+          node <<'NODE'
+          const admin = require("firebase-admin");
+
+          async function main() {
+            const serviceAccount = JSON.parse(
+              process.env.FIREBASE_SERVICE_ACCOUNT
+            );
+
+            admin.initializeApp({
+              credential: admin.credential.cert(serviceAccount),
+              databaseURL: process.env.FIREBASE_DATABASE_URL
+            });
+
+            await admin.database().ref("workflow").update({
+              status: "running",
+              log: "SportsHub sync started...",
+              updatedAt: Date.now()
+            });
+
+            await admin.app().delete();
+          }
+
+          main().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Run node index.js
+        id: sync
+        shell: bash
+        run: |
+          set -o pipefail
+
+          if [ ! -f index.js ]; then
+            echo "ERROR: index.js not found in repository root."
+            exit 1
+          fi
+
+          node index.js 2>&1 | tee workflow.log
+
+      - name: Update Firebase Workflow Status and Log
+        if: always()
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+          SYNC_OUTCOME: ${{ steps.sync.outcome }}
+        run: |
+          node <<'NODE'
+          const admin = require("firebase-admin");
+          const fs = require("fs");
+
+          async function main() {
+            const serviceAccount = JSON.parse(
+              process.env.FIREBASE_SERVICE_ACCOUNT
+            );
+
+            admin.initializeApp({
+              credential: admin.credential.cert(serviceAccount),
+              databaseURL: process.env.FIREBASE_DATABASE_URL
+            });
+
+            const outcome = process.env.SYNC_OUTCOME;
+
+            const status = outcome === "success"
+              ? "completed"
+              : "failed";
+
+            let log = "";
+
+            if (fs.existsSync("workflow.log")) {
+              log = fs.readFileSync("workflow.log", "utf8");
+            } else {
+              log = "No workflow.log file was generated.";
+            }
+
+            const maxLength = 80000;
+
+            if (log.length > maxLength) {
+              log = log.substring(log.length - maxLength);
+              log = "[Earlier log content truncated]\n" + log;
+            }
+
+            await admin.database().ref("workflow").update({
+              status: status,
+              log: log,
+              updatedAt: Date.now()
+            });
+
+            console.log("Firebase workflow status updated:", status);
+
+            await admin.app().delete();
+          }
+
+          main().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
