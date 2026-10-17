@@ -1,9 +1,15 @@
 const axios = require("axios");
 const admin = require("firebase-admin");
 
+const API_PROVIDER = (
+    process.env.API_PROVIDER || "apifootball"
+).toLowerCase();
+
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const DATABASE_URL = process.env.FIREBASE_DATABASE_URL;
 const SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT;
+
+const TIMEZONE = "Asia/Kolkata";
 
 if (!API_KEY || !DATABASE_URL || !SERVICE_ACCOUNT_JSON) {
     console.error("Missing required GitHub Secrets.");
@@ -15,7 +21,7 @@ let serviceAccount;
 try {
     serviceAccount = JSON.parse(SERVICE_ACCOUNT_JSON);
 } catch (error) {
-    console.error("FIREBASE_SERVICE_ACCOUNT is not valid JSON.");
+    console.error("FIREBASE_SERVICE_ACCOUNT is invalid JSON.");
     process.exit(1);
 }
 
@@ -26,25 +32,39 @@ admin.initializeApp({
 
 const db = admin.database();
 
-const api = axios.create({
-    baseURL: "https://v3.football.api-sports.io",
-    timeout: 30000,
-    headers: {
-        "x-apisports-key": API_KEY
-    }
-});
+/*
+ * API PROVIDER
+ *
+ * ഇപ്പോൾ API-Football.
+ * മറ്റൊരു API ചേർക്കുമ്പോൾ ഈ ഭാഗം വിപുലീകരിക്കാം.
+ */
 
-const TIMEZONE = "Asia/Kolkata";
+function createProvider() {
+
+    if (API_PROVIDER === "apifootball") {
+
+        return axios.create({
+            baseURL: "https://v3.football.api-sports.io",
+            timeout: 30000,
+            headers: {
+                "x-apisports-key": API_KEY
+            }
+        });
+    }
+
+    throw new Error(
+        "Unsupported API_PROVIDER: " + API_PROVIDER
+    );
+}
+
+const api = createProvider();
 
 /*
- * API-FOOTBALL FREE PLAN:
- * ഈ ഉദാഹരണത്തിൽ കഴിഞ്ഞ ദിവസം, ഇന്ന്, നാളെ
- * എന്നീ തീയതികൾ മാത്രമാണ് പരിശോധിക്കുന്നത്.
- *
- * API error വന്നാൽ മറ്റ് തീയതികളുടെ request തുടരും.
+ * തീയതി: ഇന്ത്യയിലെ local date
  */
 
 function getLocalDate(offset) {
+
     const parts = new Intl.DateTimeFormat("en-CA", {
         timeZone: TIMEZONE,
         year: "numeric",
@@ -58,38 +78,46 @@ function getLocalDate(offset) {
         values[part.type] = part.value;
     }
 
-    const date = new Date(
-        Date.UTC(
-            Number(values.year),
-            Number(values.month) - 1,
-            Number(values.day) + offset
-        )
-    );
+    const date = new Date(Date.UTC(
+        Number(values.year),
+        Number(values.month) - 1,
+        Number(values.day) + offset
+    ));
 
     return date.toISOString().substring(0, 10);
 }
 
 function formatDate(dateString) {
-    if (!dateString) return "";
+
+    if (!dateString) {
+        return "";
+    }
 
     const date = new Date(dateString);
 
-    if (isNaN(date.getTime())) return "";
+    if (isNaN(date.getTime())) {
+        return "";
+    }
 
     return new Intl.DateTimeFormat("en-GB", {
         day: "2-digit",
         month: "2-digit",
         year: "numeric",
         timeZone: TIMEZONE
-    }).format(date);
+    }).format(date).replace(/\//g, "-");
 }
 
 function formatTime(dateString) {
-    if (!dateString) return "";
+
+    if (!dateString) {
+        return "";
+    }
 
     const date = new Date(dateString);
 
-    if (isNaN(date.getTime())) return "";
+    if (isNaN(date.getTime())) {
+        return "";
+    }
 
     return new Intl.DateTimeFormat("en-GB", {
         hour: "2-digit",
@@ -100,7 +128,10 @@ function formatTime(dateString) {
 }
 
 function getStatus(shortStatus, longStatus) {
-    const status = String(shortStatus || "").toUpperCase();
+
+    const status = String(
+        shortStatus || ""
+    ).toUpperCase();
 
     if (["1H", "2H", "ET", "BT", "P", "LIVE"].includes(status)) {
         return "Live";
@@ -120,7 +151,14 @@ function getStatus(shortStatus, longStatus) {
     return longStatus || status || "Upcoming";
 }
 
+/*
+ * API RESPONSE -> COMMON MATCH FORMAT
+ *
+ * Firebase-ൽ നിലവിലുള്ള field names നിലനിർത്തുന്നു.
+ */
+
 function convertFixture(item) {
+
     const fixture = item.fixture || {};
     const league = item.league || {};
     const teams = item.teams || {};
@@ -130,36 +168,74 @@ function convertFixture(item) {
 
     const fixtureId = String(fixture.id || "");
 
-    const homeScore = goals.home == null ? 0 : goals.home;
-    const awayScore = goals.away == null ? 0 : goals.away;
+    if (!fixtureId) {
+        return null;
+    }
+
+    const homeScore =
+        goals.home == null ? 0 : goals.home;
+
+    const awayScore =
+        goals.away == null ? 0 : goals.away;
+
+    const fixtureDate = fixture.date || "";
+
+    const timestamp = Number(
+        fixture.timestamp || 0
+    );
 
     return {
-        gameId: fixtureId,
+
+        gameId: Number(fixtureId),
+
         fixtureId: fixtureId,
 
-        competitionId: String(league.id || ""),
-        competition: String(league.name || ""),
+        apiProvider: API_PROVIDER,
+
+        apiFixtureId: fixtureId,
+
+        competitionId: Number(league.id || 0),
+
         league: String(league.name || ""),
-        country: String(league.country || ""),
-        season: String(league.season || ""),
 
-        home: String((teams.home || {}).name || ""),
-        away: String((teams.away || {}).name || ""),
+        home: String(
+            (teams.home || {}).name || ""
+        ),
 
-        homeLogo: String((teams.home || {}).logo || ""),
-        awayLogo: String((teams.away || {}).logo || ""),
+        away: String(
+            (teams.away || {}).name || ""
+        ),
 
-        date: formatDate(fixture.date),
-        time: formatTime(fixture.date),
-        timestamp: Number(fixture.timestamp || 0),
+        homeLogo: String(
+            (teams.home || {}).logo || ""
+        ),
+
+        awayLogo: String(
+            (teams.away || {}).logo || ""
+        ),
+
+        date: formatDate(fixtureDate),
+
+        time: formatTime(fixtureDate),
+
+        timestamp: timestamp,
+
+        matchTimeMillis: timestamp * 1000,
 
         homeScore: homeScore,
+
         awayScore: awayScore,
+
         score: homeScore + " - " + awayScore,
 
-        status: getStatus(status.short, status.long),
-        shortStatus: String(status.short || "NS"),
-        elapsed: status.elapsed == null ? 0 : status.elapsed,
+        status: getStatus(
+            status.short,
+            status.long
+        ),
+
+        shortStatus: String(
+            status.short || "NS"
+        ),
 
         stadium: String(venue.name || ""),
 
@@ -167,8 +243,18 @@ function convertFixture(item) {
     };
 }
 
+/*
+ * API-FOOTBALL: ഒരു തീയതിയിലെ മത്സരങ്ങൾ
+ */
+
 async function fetchFixturesForDate(date) {
-    console.log("Fetching fixtures for:", date);
+
+    if (API_PROVIDER !== "apifootball") {
+        throw new Error(
+            "Provider adapter is not implemented: " +
+            API_PROVIDER
+        );
+    }
 
     const response = await api.get("/fixtures", {
         params: {
@@ -179,116 +265,112 @@ async function fetchFixturesForDate(date) {
 
     const data = response.data || {};
 
-    if (data.errors && Object.keys(data.errors).length > 0) {
+    if (
+        data.errors &&
+        Object.keys(data.errors).length > 0
+    ) {
         throw new Error(
-            "API-Football error: " + JSON.stringify(data.errors)
+            JSON.stringify(data.errors)
         );
     }
 
     return data.response || [];
 }
 
-async function fetchSelectedFixture(fixtureId) {
-    const response = await api.get("/fixtures", {
-        params: {
-            id: fixtureId,
-            timezone: TIMEZONE
-        }
-    });
-
-    const data = response.data || {};
-
-    if (data.errors && Object.keys(data.errors).length > 0) {
-        throw new Error(
-            "API-Football error: " + JSON.stringify(data.errors)
-        );
-    }
-
-    const fixtures = data.response || [];
-
-    if (fixtures.length === 0) {
-        return null;
-    }
-
-    return convertFixture(fixtures[0]);
-}
-
 /*
  * AVAILABLE MATCHES
  *
- * API-Football-ൽ ലഭ്യമായ മത്സരങ്ങൾ Firebase-ൽ സൂക്ഷിക്കുന്നു.
- * ഒരു തീയതിയുടെ request പരാജയപ്പെട്ടാലും അടുത്ത തീയതി പരിശോധിക്കും.
+ * പഴയ Firebase data delete ചെയ്യില്ല.
  */
 
 async function syncAvailableMatches() {
+
     const dates = [
         getLocalDate(-1),
         getLocalDate(0),
         getLocalDate(1)
     ];
 
-    const uniqueDates = Array.from(new Set(dates));
-
     const available = {};
+
     let successfulDates = 0;
 
-    for (const date of uniqueDates) {
+    for (const date of dates) {
+
         try {
-            const fixtures = await fetchFixturesForDate(date);
+
+            const fixtures =
+                await fetchFixturesForDate(date);
 
             successfulDates++;
 
             console.log(
-                "Fixtures received for " + date + ": " +
-                fixtures.length
+                "Fetched " + fixtures.length +
+                " fixtures for " + date
             );
 
             for (const item of fixtures) {
+
                 const match = convertFixture(item);
 
-                if (match.gameId) {
-                    available[match.gameId] = match;
+                if (match && match.fixtureId) {
+
+                    available[match.fixtureId] = match;
                 }
             }
+
         } catch (error) {
+
             console.error(
-                "Could not fetch " + date + ": " + error.message
+                "Failed date " + date + ":",
+                error.message
             );
         }
     }
 
-    /*
-     * എല്ലാ തീയതികളുടെയും request പരാജയപ്പെട്ടാൽ
-     * നിലവിലുള്ള Firebase data മാറ്റരുത്.
-     */
-
     if (successfulDates === 0) {
-        console.error(
-            "No dates were fetched successfully. " +
-            "Existing availableMatches data was preserved."
+
+        throw new Error(
+            "All fixture requests failed. " +
+            "Existing Firebase data preserved."
+        );
+    }
+
+    if (Object.keys(available).length === 0) {
+
+        console.log(
+            "No fixtures returned. Existing data preserved."
         );
 
         return;
     }
 
     /*
-     * update() ഉപയോഗിക്കുന്നതിനാൽ പഴയ മത്സരങ്ങൾ delete ആകില്ല.
+     * ഓരോ match-ഉം update ചെയ്യുന്നു.
+     * Existing streamUrl overwrite ചെയ്യില്ല.
      */
 
-    if (Object.keys(available).length > 0) {
-        await db.ref("availableMatches").update(available);
+    for (const fixtureId of Object.keys(available)) {
+
+        const incoming = available[fixtureId];
+
+        const ref = db.ref(
+            "availableMatches/" + fixtureId
+        );
+
+        const snapshot = await ref.once("value");
+
+        const existing = snapshot.val() || {};
+
+        incoming.streamUrl =
+            existing.streamUrl || "";
+
+        await ref.update(incoming);
     }
 
     console.log(
-        "Available matches fetched:",
+        "Available matches updated:",
         Object.keys(available).length
-    );
-
-    console.log(
-        "Successfully fetched dates:",
-        successfulDates,
-        "/",
-        uniqueDates.length
     );
 }
 
@@ -296,57 +378,106 @@ async function syncAvailableMatches() {
  * SELECTED MATCHES
  *
  * selectedFixtures/{fixtureId} = true
- * അല്ലെങ്കിൽ
- * selectedFixtures/{fixtureId}/selected = true
- *
- * എന്ന രീതിയിൽ Admin തിരഞ്ഞെടുക്കുന്ന മത്സരങ്ങൾ മാത്രമാണ്
- * matches-ൽ പുതുക്കുന്നത്.
  */
 
 async function syncSelectedMatches() {
-    const snapshot = await db.ref("selectedFixtures").once("value");
+
+    const snapshot = await db
+        .ref("selectedFixtures")
+        .once("value");
+
     const selections = snapshot.val() || {};
 
-    const selectedIds = Object.keys(selections).filter(function(id) {
+    const selectedIds = Object.keys(
+        selections
+    ).filter(function(id) {
+
         const value = selections[id];
 
-        if (value === true) {
-            return true;
-        }
-
-        if (value && value.selected === true) {
-            return true;
-        }
-
-        return false;
+        return value === true ||
+            (value && value.selected === true);
     });
 
-    console.log("Selected fixture count:", selectedIds.length);
+    console.log(
+        "Selected fixture count:",
+        selectedIds.length
+    );
 
     for (const fixtureId of selectedIds) {
-        try {
-            const match = await fetchSelectedFixture(fixtureId);
 
-            if (!match) {
-                console.log("Fixture not found:", fixtureId);
+        try {
+
+            const fixtures =
+                await fetchFixturesForDate(
+                    getLocalDate(0)
+                );
+
+            let found = null;
+
+            for (const item of fixtures) {
+
+                if (
+                    String(item.fixture.id) ===
+                    String(fixtureId)
+                ) {
+                    found = item;
+                    break;
+                }
+            }
+
+            if (!found) {
+
+                console.log(
+                    "Selected fixture not found in today's list:",
+                    fixtureId
+                );
+
                 continue;
             }
 
-            await db.ref("matches/" + fixtureId).update(match);
+            const match = convertFixture(found);
+
+            if (!match) {
+                continue;
+            }
+
+            const ref = db.ref(
+                "matches/" + fixtureId
+            );
+
+            const oldSnapshot = await ref.once("value");
+
+            const existing = oldSnapshot.val() || {};
+
+            /*
+             * Admin നൽകിയ Stream URL നിലനിർത്തുക.
+             */
+
+            match.streamUrl =
+                existing.streamUrl || "";
+
+            /*
+             * പഴയ compatibility field-ുകൾ സംരക്ഷിക്കുക.
+             */
+
+            match.gameId = Number(
+                existing.gameId || match.gameId
+            );
+
+            await ref.update(match);
 
             console.log(
-                "Updated selected match:",
+                "Updated:",
                 match.home,
                 "vs",
-                match.away,
-                "|",
-                match.score,
-                "|",
-                match.status
+                match.away
             );
+
         } catch (error) {
+
             console.error(
-                "Failed to update fixture " + fixtureId + ":",
+                "Selected fixture failed:",
+                fixtureId,
                 error.message
             );
         }
@@ -354,17 +485,15 @@ async function syncSelectedMatches() {
 }
 
 async function main() {
-    console.log("================================");
+
     console.log("SportsHub sync started.");
-    console.log("================================");
+    console.log("Provider:", API_PROVIDER);
 
     await syncAvailableMatches();
 
     await syncSelectedMatches();
 
-    console.log("================================");
     console.log("SportsHub sync completed.");
-    console.log("================================");
 }
 
 main()
@@ -372,6 +501,7 @@ main()
         process.exit(0);
     })
     .catch(function(error) {
+
         console.error(
             "SportsHub sync failed:",
             error.message
