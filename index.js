@@ -34,6 +34,41 @@ const api = axios.create({
     }
 });
 
+const TIMEZONE = "Asia/Kolkata";
+
+/*
+ * API-FOOTBALL FREE PLAN:
+ * ഈ ഉദാഹരണത്തിൽ കഴിഞ്ഞ ദിവസം, ഇന്ന്, നാളെ
+ * എന്നീ തീയതികൾ മാത്രമാണ് പരിശോധിക്കുന്നത്.
+ *
+ * API error വന്നാൽ മറ്റ് തീയതികളുടെ request തുടരും.
+ */
+
+function getLocalDate(offset) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: TIMEZONE,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+    }).formatToParts(new Date());
+
+    const values = {};
+
+    for (const part of parts) {
+        values[part.type] = part.value;
+    }
+
+    const date = new Date(
+        Date.UTC(
+            Number(values.year),
+            Number(values.month) - 1,
+            Number(values.day) + offset
+        )
+    );
+
+    return date.toISOString().substring(0, 10);
+}
+
 function formatDate(dateString) {
     if (!dateString) return "";
 
@@ -41,12 +76,12 @@ function formatDate(dateString) {
 
     if (isNaN(date.getTime())) return "";
 
-    return date.toLocaleDateString("en-GB", {
+    return new Intl.DateTimeFormat("en-GB", {
         day: "2-digit",
         month: "2-digit",
         year: "numeric",
-        timeZone: "Asia/Kolkata"
-    });
+        timeZone: TIMEZONE
+    }).format(date);
 }
 
 function formatTime(dateString) {
@@ -56,12 +91,12 @@ function formatTime(dateString) {
 
     if (isNaN(date.getTime())) return "";
 
-    return date.toLocaleTimeString("en-GB", {
+    return new Intl.DateTimeFormat("en-GB", {
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
-        timeZone: "Asia/Kolkata"
-    });
+        timeZone: TIMEZONE
+    }).format(date);
 }
 
 function getStatus(shortStatus, longStatus) {
@@ -91,8 +126,12 @@ function convertFixture(item) {
     const teams = item.teams || {};
     const goals = item.goals || {};
     const status = fixture.status || {};
+    const venue = fixture.venue || {};
 
     const fixtureId = String(fixture.id || "");
+
+    const homeScore = goals.home == null ? 0 : goals.home;
+    const awayScore = goals.away == null ? 0 : goals.away;
 
     return {
         gameId: fixtureId,
@@ -114,19 +153,15 @@ function convertFixture(item) {
         time: formatTime(fixture.date),
         timestamp: Number(fixture.timestamp || 0),
 
-        homeScore: goals.home == null ? 0 : goals.home,
-        awayScore: goals.away == null ? 0 : goals.away,
-        score: (goals.home == null ? 0 : goals.home) +
-            " - " +
-            (goals.away == null ? 0 : goals.away),
+        homeScore: homeScore,
+        awayScore: awayScore,
+        score: homeScore + " - " + awayScore,
 
         status: getStatus(status.short, status.long),
         shortStatus: String(status.short || "NS"),
         elapsed: status.elapsed == null ? 0 : status.elapsed,
 
-        stadium: String(
-            ((fixture.venue || {}).name) || ""
-        ),
+        stadium: String(venue.name || ""),
 
         lastUpdated: Date.now()
     };
@@ -138,7 +173,7 @@ async function fetchFixturesForDate(date) {
     const response = await api.get("/fixtures", {
         params: {
             date: date,
-            timezone: "Asia/Kolkata"
+            timezone: TIMEZONE
         }
     });
 
@@ -157,7 +192,7 @@ async function fetchSelectedFixture(fixtureId) {
     const response = await api.get("/fixtures", {
         params: {
             id: fixtureId,
-            timezone: "Asia/Kolkata"
+            timezone: TIMEZONE
         }
     });
 
@@ -165,8 +200,7 @@ async function fetchSelectedFixture(fixtureId) {
 
     if (data.errors && Object.keys(data.errors).length > 0) {
         throw new Error(
-            "Fixture " + fixtureId + ": " +
-            JSON.stringify(data.errors)
+            "API-Football error: " + JSON.stringify(data.errors)
         );
     }
 
@@ -179,43 +213,95 @@ async function fetchSelectedFixture(fixtureId) {
     return convertFixture(fixtures[0]);
 }
 
+/*
+ * AVAILABLE MATCHES
+ *
+ * API-Football-ൽ ലഭ്യമായ മത്സരങ്ങൾ Firebase-ൽ സൂക്ഷിക്കുന്നു.
+ * ഒരു തീയതിയുടെ request പരാജയപ്പെട്ടാലും അടുത്ത തീയതി പരിശോധിക്കും.
+ */
+
 async function syncAvailableMatches() {
-    const now = new Date();
-
-    const dates = [];
-
-    for (let offset = -1; offset <= 2; offset++) {
-        const date = new Date(now.getTime() + offset * 86400000);
-
-        dates.push(
-            date.toLocaleDateString("en-CA", {
-                timeZone: "Asia/Kolkata"
-            })
-        );
-    }
+    const dates = [
+        getLocalDate(-1),
+        getLocalDate(0),
+        getLocalDate(1)
+    ];
 
     const uniqueDates = Array.from(new Set(dates));
+
     const available = {};
+    let successfulDates = 0;
 
     for (const date of uniqueDates) {
-        const fixtures = await fetchFixturesForDate(date);
+        try {
+            const fixtures = await fetchFixturesForDate(date);
 
-        for (const item of fixtures) {
-            const match = convertFixture(item);
+            successfulDates++;
 
-            if (match.gameId) {
-                available[match.gameId] = match;
+            console.log(
+                "Fixtures received for " + date + ": " +
+                fixtures.length
+            );
+
+            for (const item of fixtures) {
+                const match = convertFixture(item);
+
+                if (match.gameId) {
+                    available[match.gameId] = match;
+                }
             }
+        } catch (error) {
+            console.error(
+                "Could not fetch " + date + ": " + error.message
+            );
         }
     }
 
-    await db.ref("availableMatches").update(available);
+    /*
+     * എല്ലാ തീയതികളുടെയും request പരാജയപ്പെട്ടാൽ
+     * നിലവിലുള്ള Firebase data മാറ്റരുത്.
+     */
+
+    if (successfulDates === 0) {
+        console.error(
+            "No dates were fetched successfully. " +
+            "Existing availableMatches data was preserved."
+        );
+
+        return;
+    }
+
+    /*
+     * update() ഉപയോഗിക്കുന്നതിനാൽ പഴയ മത്സരങ്ങൾ delete ആകില്ല.
+     */
+
+    if (Object.keys(available).length > 0) {
+        await db.ref("availableMatches").update(available);
+    }
 
     console.log(
         "Available matches fetched:",
         Object.keys(available).length
     );
+
+    console.log(
+        "Successfully fetched dates:",
+        successfulDates,
+        "/",
+        uniqueDates.length
+    );
 }
+
+/*
+ * SELECTED MATCHES
+ *
+ * selectedFixtures/{fixtureId} = true
+ * അല്ലെങ്കിൽ
+ * selectedFixtures/{fixtureId}/selected = true
+ *
+ * എന്ന രീതിയിൽ Admin തിരഞ്ഞെടുക്കുന്ന മത്സരങ്ങൾ മാത്രമാണ്
+ * matches-ൽ പുതുക്കുന്നത്.
+ */
 
 async function syncSelectedMatches() {
     const snapshot = await db.ref("selectedFixtures").once("value");
@@ -224,8 +310,13 @@ async function syncSelectedMatches() {
     const selectedIds = Object.keys(selections).filter(function(id) {
         const value = selections[id];
 
-        if (value === true) return true;
-        if (value && value.selected === true) return true;
+        if (value === true) {
+            return true;
+        }
+
+        if (value && value.selected === true) {
+            return true;
+        }
 
         return false;
     });
@@ -247,7 +338,11 @@ async function syncSelectedMatches() {
                 "Updated selected match:",
                 match.home,
                 "vs",
-                match.away
+                match.away,
+                "|",
+                match.score,
+                "|",
+                match.status
             );
         } catch (error) {
             console.error(
@@ -259,12 +354,17 @@ async function syncSelectedMatches() {
 }
 
 async function main() {
+    console.log("================================");
     console.log("SportsHub sync started.");
+    console.log("================================");
 
     await syncAvailableMatches();
+
     await syncSelectedMatches();
 
+    console.log("================================");
     console.log("SportsHub sync completed.");
+    console.log("================================");
 }
 
 main()
@@ -272,6 +372,10 @@ main()
         process.exit(0);
     })
     .catch(function(error) {
-        console.error("SportsHub sync failed:", error.message);
+        console.error(
+            "SportsHub sync failed:",
+            error.message
+        );
+
         process.exit(1);
     });
