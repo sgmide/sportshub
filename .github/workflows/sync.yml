@@ -2,6 +2,15 @@ name: SportsHub API Sync
 
 on:
   workflow_dispatch:
+    inputs:
+      api_provider:
+        description: "Choose API provider"
+        required: true
+        type: choice
+        options:
+          - apifootball
+          - 365scores
+        default: apifootball
 
   schedule:
     - cron: "*/15 * * * *"
@@ -11,7 +20,7 @@ permissions:
 
 jobs:
   sync:
-    name: Sync API-Football with Firebase
+    name: Sync SportsHub with Firebase
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -27,9 +36,20 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Run SportsHub sync
+      - name: Run selected API
         env:
+          API_PROVIDER: ${{ github.event_name == 'schedule' && 'apifootball' || inputs.api_provider || 'apifootball' }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
-        run: npm start
+        run: |
+          echo "Selected API: $API_PROVIDER"
+
+          if [ "$API_PROVIDER" = "365scores" ]; then
+            node apis/365scores.js
+          elif [ "$API_PROVIDER" = "apifootball" ]; then
+            npm start
+          else
+            echo "Unknown API provider: $API_PROVIDER"
+            exit 1
+          fi
