@@ -4,14 +4,12 @@ on:
 workflow_dispatch:
 
 schedule:
-- cron: "*/15 * * * *"
+
+cron: "*/15 * * * *"
+
 
 permissions:
 contents: read
-
-concurrency:
-group: sportshub-api-sync
-cancel-in-progress: false
 
 jobs:
 sync:
@@ -20,148 +18,105 @@ runs-on: ubuntu-latest
 timeout-minutes: 10
 
 steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
 
-  - name: Setup Node.js
-    uses: actions/setup-node@v4
-    with:
-      node-version: "20"
+name: Checkout repository
+uses: actions/checkout@v4
 
-  - name: Install dependencies
-    run: npm install --no-audit --no-fund
+name: Setup Node.js
+uses: actions/setup-node@v4
+with:
+node-version: "20"
 
-  - name: Validate Firebase secrets
-    env:
-      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-      FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
-    run: |
-      if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
-        echo "::error::FIREBASE_SERVICE_ACCOUNT secret is missing"
-        exit 1
-      fi
+name: Install dependencies
+run: npm install
 
-      if [ -z "$FIREBASE_DATABASE_URL" ]; then
-        echo "::error::FIREBASE_DATABASE_URL secret is missing"
-        exit 1
-      fi
+name: Select API from Firebase
+id: parser
+env:
+FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+run: |
+node <<'NODE'
+const admin = require("firebase-admin");
 
-      node -e 'JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)' || {
-        echo "::error::Invalid Firebase service account JSON"
-        exit 1
-      }
+async function main() {
+const serviceAccount = JSON.parse(
+process.env.FIREBASE_SERVICE_ACCOUNT
+);
 
-      echo "Firebase secrets validated."
+admin.initializeApp({    
+  credential: admin.credential.cert(serviceAccount),    
+  databaseURL: process.env.FIREBASE_DATABASE_URL    
+});    
 
-  - name: Select API from Firebase
-    id: parser
-    env:
-      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-      FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
-    run: |
-      node <<'NODE'
-      const admin = require("firebase-admin");
-      const fs = require("fs");
+const db = admin.database();    
 
-      async function main() {
-        const serviceAccount = JSON.parse(
-          process.env.FIREBASE_SERVICE_ACCOUNT
-        );
+const snapshot = await db.ref("settings").once("value");    
+const settings = snapshot.val() || {};    
 
-        admin.initializeApp({
-          credential: admin.credential.cert(serviceAccount),
-          databaseURL: process.env.FIREBASE_DATABASE_URL
-        });
+const parserKey = settings.selected_parser || "parse1";    
+const parser = settings.parse && settings.parse[parserKey];    
 
-        try {
-          const db = admin.database();
+if (!parser) {    
+  throw new Error(    
+    "Selected parser configuration not found: " + parserKey    
+  );    
+}    
 
-          const snapshot = await db.ref("settings").once("value");
-          const settings = snapshot.val() || {};
+const apiParser = String(    
+  parser.api_parser || ""    
+).trim().toLowerCase();    
 
-          const parserKey = settings.selected_parser || "parse1";
-          const parser = settings.parse && settings.parse[parserKey];
+let provider;    
 
-          if (!parser) {
-            throw new Error(
-              "Selected parser configuration not found: " + parserKey
-            );
-          }
+if (apiParser === "365" || apiParser === "365scores") {    
+  provider = "365scores";    
+} else if (    
+  apiParser === "apifootball" ||    
+  apiParser === "football"    
+) {    
+  provider = "apifootball";    
+} else {    
+  throw new Error(    
+    "Unsupported API parser: " + apiParser    
+  );    
+}    
 
-          const apiParser = String(
-            parser.api_parser || ""
-          ).trim().toLowerCase();
+console.log("Selected parser:", parserKey);    
+console.log("Selected API provider:", provider);    
 
-          let provider;
+const fs = require("fs");    
+fs.appendFileSync(    
+  process.env.GITHUB_OUTPUT,    
+  "provider=" + provider + "\n"    
+);    
 
-          if (
-            apiParser === "365" ||
-            apiParser === "365scores"
-          ) {
-            provider = "365scores";
-          } else if (
-            apiParser === "apifootball" ||
-            apiParser === "football"
-          ) {
-            provider = "apifootball";
-          } else {
-            throw new Error(
-              "Unsupported API parser: " + apiParser
-            );
-          }
+await admin.app().delete();
 
-          console.log("Selected parser:", parserKey);
-          console.log("Selected API provider:", provider);
+}
 
-          fs.appendFileSync(
-            process.env.GITHUB_OUTPUT,
-            "provider=" + provider + "\n"
-          );
-        } finally {
-          await admin.app().delete();
-        }
-      }
+main().catch(async error => {
+console.error(error);
+try {
+if (admin.apps.length) {
+await admin.app().delete();
+}
+} catch (_) {}
+process.exit(1);
+});
+NODE
 
-      main().catch(error => {
-        console.error("API selection failed:", error.message);
-        process.exit(1);
-      });
-      NODE
+name: Run API-Football
+if: steps.parser.outputs.provider == 'apifootball'
+env:
+API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+run: npm start
 
-  - name: Check API-Football configuration
-    if: steps.parser.outputs.provider == 'apifootball'
-    env:
-      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
-    run: |
-      if [ -z "$API_FOOTBALL_KEY" ]; then
-        echo "::error::API_FOOTBALL_KEY secret is missing"
-        exit 1
-      fi
-
-      if [ ! -f "apis/api-football.js" ]; then
-        echo "::error::apis/api-football.js not found"
-        exit 1
-      fi
-
-  - name: Check 365Scores configuration
-    if: steps.parser.outputs.provider == '365scores'
-    run: |
-      if [ ! -f "apis/365scores.js" ]; then
-        echo "::error::apis/365scores.js not found"
-        exit 1
-      fi
-
-  - name: Run API-Football
-    if: steps.parser.outputs.provider == 'apifootball'
-    env:
-      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
-      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-      FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
-    run: node apis/api-football.js
-
-  - name: Run 365Scores
-    if: steps.parser.outputs.provider == '365scores'
-    env:
-      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-      FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
-    run: node apis/365scores.js
+name: Run 365Scores
+if: steps.parser.outputs.provider == '365scores'
+env:
+FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+run: node apis/365scores.js
