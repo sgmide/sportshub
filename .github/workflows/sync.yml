@@ -1,4 +1,4 @@
-name: SportsHub API Sync
+name: API-Football Sync
 
 on:
 workflow_dispatch:
@@ -11,108 +11,25 @@ contents: read
 
 jobs:
 sync:
-name: Sync SportsHub with Firebase
+name: Sync API-Football Matches
 runs-on: ubuntu-latest
 timeout-minutes: 10
 
-steps:  
-  - name: Checkout repository  
-    uses: actions/checkout@v4  
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
 
-  - name: Setup Node.js  
-    uses: actions/setup-node@v4  
-    with:  
-      node-version: "20"  
+  - name: Setup Node.js
+    uses: actions/setup-node@v4
+    with:
+      node-version: "20"
 
-  - name: Install dependencies  
-    run: npm install  
+  - name: Install dependencies
+    run: npm install
 
-  - name: Select API from Firebase  
-    id: parser  
-    env:  
-      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}  
-      FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}  
-    run: |  
-      node <<'NODE'  
-      const admin = require("firebase-admin");  
-
-      async function main() {  
-        const serviceAccount = JSON.parse(  
-          process.env.FIREBASE_SERVICE_ACCOUNT  
-        );  
-
-        admin.initializeApp({  
-          credential: admin.credential.cert(serviceAccount),  
-          databaseURL: process.env.FIREBASE_DATABASE_URL  
-        });  
-
-        const db = admin.database();  
-
-        const snapshot = await db.ref("settings").once("value");  
-        const settings = snapshot.val() || {};  
-
-        const parserKey = settings.selected_parser || "parse1";  
-        const parser = settings.parse && settings.parse[parserKey];  
-
-        if (!parser) {  
-          throw new Error(  
-            "Selected parser configuration not found: " + parserKey  
-          );  
-        }  
-
-        const apiParser = String(  
-          parser.api_parser || ""  
-        ).trim().toLowerCase();  
-
-        let provider;  
-
-        if (apiParser === "365" || apiParser === "365scores") {  
-          provider = "365scores";  
-        } else if (  
-          apiParser === "apifootball" ||  
-          apiParser === "football"  
-        ) {  
-          provider = "apifootball";  
-        } else {  
-          throw new Error(  
-            "Unsupported API parser: " + apiParser  
-          );  
-        }  
-
-        console.log("Selected parser:", parserKey);  
-        console.log("Selected API provider:", provider);  
-
-        const fs = require("fs");  
-        fs.appendFileSync(  
-          process.env.GITHUB_OUTPUT,  
-          "provider=" + provider + "\n"  
-        );  
-
-        await admin.app().delete();  
-      }  
-
-      main().catch(async error => {  
-        console.error(error);  
-        try {  
-          if (admin.apps.length) {  
-            await admin.app().delete();  
-          }  
-        } catch (_) {}  
-        process.exit(1);  
-      });  
-      NODE  
-
-  - name: Run API-Football  
-    if: steps.parser.outputs.provider == 'apifootball'  
-    env:  
-      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}  
-      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}  
-      FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}  
-    run: npm start  
-
-  - name: Run 365Scores  
-    if: steps.parser.outputs.provider == '365scores'  
-    env:  
-      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}  
-      FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}  
-    run: node apis/365scores.js
+  - name: Run API-Football
+    env:
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+    run: npm start
