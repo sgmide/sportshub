@@ -101,7 +101,6 @@ jobs:
             process.exit(1);
           });
           NODE
-
       - name: Run API-Football
         if: steps.parser.outputs.provider == 'apifootball'
         env:
