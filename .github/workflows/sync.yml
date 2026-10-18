@@ -31,7 +31,7 @@ steps:
   - name: Install dependencies
     run: npm install --no-audit --no-fund
 
-  - name: Validate Firebase configuration
+  - name: Validate Firebase secrets
     env:
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
       FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
@@ -46,12 +46,12 @@ steps:
         exit 1
       fi
 
-      node -e "JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)" || {
+      node -e 'JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)' || {
         echo "::error::Invalid Firebase service account JSON"
         exit 1
       }
 
-      echo "Firebase configuration validated."
+      echo "Firebase secrets validated."
 
   - name: Select API from Firebase
     id: parser
@@ -80,13 +80,11 @@ steps:
           const settings = snapshot.val() || {};
 
           const parserKey = settings.selected_parser || "parse1";
-          const parser = settings.parse &&
-                         settings.parse[parserKey];
+          const parser = settings.parse && settings.parse[parserKey];
 
           if (!parser) {
             throw new Error(
-              "Selected parser configuration not found: " +
-              parserKey
+              "Selected parser configuration not found: " + parserKey
             );
           }
 
@@ -145,7 +143,7 @@ steps:
         exit 1
       fi
 
-  - name: Check 365Scores script
+  - name: Check 365Scores configuration
     if: steps.parser.outputs.provider == '365scores'
     run: |
       if [ ! -f "apis/365scores.js" ]; then
