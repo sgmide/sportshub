@@ -446,113 +446,161 @@ function normalizeSportIds(settings) {
 // MATCH STATUS
 // ==================================================
 
-function getMatchStatus(game) {
 
-    const text =
-        String(game.statusText || "").trim();
+        function getMatchStatus(game) {
 
-    const shortText =
-        String(
-            game.shortStatusText || text
-        ).trim();
+function clean(value) {
+    return String(value == null ? "" : value)
+        .trim()
+        .toLowerCase()
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ");
+}
 
-    const normalized =
-        (text + " " + shortText).toLowerCase();
+const statusText = clean(game.statusText);
+const shortText = clean(game.shortStatusText);
 
-    if (
-        normalized.includes("postponed") ||
-        normalized.includes("ppd")
-    ) {
-        return {
-            status: "Postponed",
-            shortStatus: "PPD"
-        };
-    }
+// API response-il undaakaan saadhyathayulla
+// alternate status fields.
+const statusName = clean(
+    game.status ||
+    game.statusName ||
+    game.gameStatus ||
+    game.gameStatusText
+);
 
-    if (
-        normalized.includes("cancelled") ||
-        normalized.includes("canceled") ||
-        normalized.includes("canc")
-    ) {
-        return {
-            status: "Cancelled",
-            shortStatus: "CANC"
-        };
-    }
+const shortName = clean(
+    game.shortStatus ||
+    game.statusCode ||
+    game.gameStatusCode
+);
 
-    if (
-        normalized.includes("abandoned") ||
-        normalized.includes("abd")
-    ) {
-        return {
-            status: "Abandoned",
-            shortStatus: "ABD"
-        };
-    }
+const texts = [
+    statusText,
+    shortText,
+    statusName,
+    shortName
+].filter(Boolean);
 
-    if (
-        normalized.includes("penalties") ||
-        normalized.includes("penalty shootout")
-    ) {
-        return {
-            status: "After Penalties",
-            shortStatus: "AP"
-        };
-    }
+const normalized = texts.join(" ");
 
-    if (
-        normalized === "ht" ||
-        normalized.includes("half time") ||
-        normalized.includes("halftime")
-    ) {
-        return {
-            status: "Half Time",
-            shortStatus: "HT"
-        };
-    }
-
-    if (
-        normalized.includes("extra time") ||
-        normalized === "et"
-    ) {
-        return {
-            status: "Extra Time",
-            shortStatus: "ET"
-        };
-    }
-
-    if (
-        normalized.includes("live") ||
-        normalized.includes("in progress") ||
-        normalized.includes("1st half") ||
-        normalized.includes("2nd half") ||
-        normalized.includes("quarter") ||
-        normalized.includes("period")
-    ) {
-        return {
-            status: "Live",
-            shortStatus: shortText || "LIVE"
-        };
-    }
-
-    if (
-        normalized.includes("ended") ||
-        normalized.includes("finished") ||
-        normalized.includes("final") ||
-        normalized === "ft"
-    ) {
-        return {
-            status: "Finished",
-            shortStatus: "FT"
-        };
-    }
-
+// POSTPONED
+if (
+    /\b(postponed|ppd)\b/.test(normalized)
+) {
     return {
-        status: text || "Upcoming",
-        shortStatus: shortText || "NS"
+        status: "Postponed",
+        shortStatus: "PPD"
     };
 }
 
+// CANCELLED
+if (
+    /\b(cancelled|canceled|canc)\b/.test(normalized)
+) {
+    return {
+        status: "Cancelled",
+        shortStatus: "CANC"
+    };
+}
+
+// ABANDONED
+if (
+    /\b(abandoned|abd)\b/.test(normalized)
+) {
+    return {
+        status: "Abandoned",
+        shortStatus: "ABD"
+    };
+}
+
+// AFTER PENALTIES
+if (
+    /\b(after penalties|penalties|penalty shootout)\b/
+        .test(normalized) ||
+    shortName === "ap"
+) {
+    return {
+        status: "After Penalties",
+        shortStatus: "AP"
+    };
+}
+
+// FULL TIME / FINISHED
+if (
+    /\b(finished|full time|fulltime|ended|final)\b/
+        .test(normalized) ||
+    statusText === "ft" ||
+    shortText === "ft" ||
+    statusName === "ft" ||
+    shortName === "ft"
+) {
+    return {
+        status: "Finished",
+        shortStatus: "FT"
+    };
+}
+
+// HALF TIME
+if (
+    statusText === "ht" ||
+    shortText === "ht" ||
+    statusName === "ht" ||
+    shortName === "ht" ||
+    /\b(half time|halftime)\b/.test(normalized)
+) {
+    return {
+        status: "Half Time",
+        shortStatus: "HT"
+    };
+}
+
+// EXTRA TIME
+if (
+    statusText === "et" ||
+    shortText === "et" ||
+    statusName === "et" ||
+    shortName === "et" ||
+    /\b(extra time)\b/.test(normalized)
+) {
+    return {
+        status: "Extra Time",
+        shortStatus: "ET"
+    };
+}
+
+// LIVE
+if (
+    /\b(live|in progress|in play|1st half|2nd half)\b/
+        .test(normalized) ||
+    /\b\d+(st|nd|rd|th) quarter\b/.test(normalized) ||
+    /\bperiod \d+\b/.test(normalized)
+) {
+    return {
+        status: "Live",
+        shortStatus:
+            game.shortStatusText ||
+            game.statusText ||
+            "LIVE"
+    };
+}
+
+// Unknown status-ne Live ennu assume cheyyaruth.
+return {
+    status:
+        game.statusText ||
+        game.status ||
+        game.statusName ||
+        "Upcoming",
+
+    shortStatus:
+        game.shortStatusText ||
+        game.shortStatus ||
+        game.statusCode ||
+        "NS"
+};
+
+        }
 // ==================================================
 // CONVERT MATCH
 // ==================================================
