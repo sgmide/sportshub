@@ -23,18 +23,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: npm
 
       - name: Install dependencies
         run: npm install
 
-      - name: Select API from Firebase
-        id: parser
+      - name: Check Automatic Sync Settings
+        id: autosync
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
         run: |
           node <<'NODE'
           const admin = require("firebase-admin");
+          const fs = require("fs");
 
           async function main() {
             const serviceAccount = JSON.parse(
@@ -46,63 +48,141 @@ jobs:
               databaseURL: process.env.FIREBASE_DATABASE_URL
             });
 
-            const db = admin.database();
+            try {
+              const db = admin.database();
 
-            const snapshot = await db.ref("settings").once("value");
-            const settings = snapshot.val() || {};
+              const snapshot = await db.ref("syncSettings").once("value");
+              const settings = snapshot.val() || {};
 
-            const parserKey = settings.selected_parser || "parse1";
-            const parser = settings.parse && settings.parse[parserKey];
+              const enabled = settings.autoSyncEnabled === true;
 
-            if (!parser) {
-              throw new Error(
-                "Selected parser configuration not found: " + parserKey
+              console.log("Automatic sync enabled:", enabled);
+              console.log("Workflow event:", process.env.GITHUB_EVENT_NAME);
+
+              let shouldSync = true;
+
+              if (
+                process.env.GITHUB_EVENT_NAME === "schedule" &&
+                !enabled
+              ) {
+                shouldSync = false;
+                console.log(
+                  "Scheduled sync skipped because automatic sync is OFF."
+                );
+              }
+
+              if (process.env.GITHUB_EVENT_NAME === "workflow_dispatch") {
+                console.log("Manual run requested; continuing.");
+              }
+
+              fs.appendFileSync(
+                process.env.GITHUB_OUTPUT,
+                "should_sync=" + shouldSync + "\n"
               );
+            } finally {
+              await admin.app().delete();
             }
-
-            const apiParser = String(
-              parser.api_parser || ""
-            ).trim().toLowerCase();
-
-            let provider;
-
-            if (apiParser === "365" || apiParser === "365scores") {
-              provider = "365scores";
-            } else if (
-              apiParser === "apifootball" ||
-              apiParser === "football"
-            ) {
-              provider = "apifootball";
-            } else {
-              throw new Error(
-                "Unsupported API parser: " + apiParser
-              );
-            }
-
-            console.log("Selected parser:", parserKey);
-            console.log("Selected API provider:", provider);
-
-            const fs = require("fs");
-            fs.appendFileSync(
-              process.env.GITHUB_OUTPUT,
-              "provider=" + provider + "\n"
-            );
-
-            await admin.app().delete();
           }
 
           main().catch(async error => {
-            console.error(error);
+            console.error("Failed to read sync settings:", error);
+
             try {
               if (admin.apps.length) {
                 await admin.app().delete();
               }
             } catch (_) {}
+
             process.exit(1);
           });
           NODE
+
+      - name: Select API from Firebase
+        id: parser
+        if: steps.autosync.outputs.should_sync == 'true'
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
+        run: |
+          node <<'NODE'
+          const admin = require("firebase-admin");
+          const fs = require("fs");
+
+          async function main() {
+            const serviceAccount = JSON.parse(
+              process.env.FIREBASE_SERVICE_ACCOUNT
+            );
+
+            admin.initializeApp({
+              credential: admin.credential.cert(serviceAccount),
+              databaseURL: process.env.FIREBASE_DATABASE_URL
+            });
+
+            try {
+              const db = admin.database();
+              const snapshot = await db.ref("settings").once("value");
+              const settings = snapshot.val() || {};
+
+              const parserKey = settings.selected_parser || "parse1";
+              const parser = settings.parse && settings.parse[parserKey];
+
+              if (!parser) {
+                throw new Error(
+                  "Selected parser configuration not found: " + parserKey
+                );
+              }
+
+              const apiParser = String(
+                parser.api_parser || ""
+              ).trim().toLowerCase();
+
+              let provider;
+
+              if (
+                apiParser === "365" ||
+                apiParser === "365scores"
+              ) {
+                provider = "365scores";
+              } else if (
+                apiParser === "apifootball" ||
+                apiParser === "football"
+              ) {
+                provider = "apifootball";
+              } else {
+                throw new Error(
+                  "Unsupported API parser: " + apiParser
+                );
+              }
+
+              console.log("Selected parser:", parserKey);
+              console.log("Selected API provider:", provider);
+
+              fs.appendFileSync(
+                process.env.GITHUB_OUTPUT,
+                "provider=" + provider + "\n"
+              );
+            } finally {
+              await admin.app().delete();
+            }
+          }
+
+          main().catch(async error => {
+            console.error("API selection failed:", error);
+
+            try {
+              if (admin.apps.length) {
+                await admin.app().delete();
+              }
+            } catch (_) {}
+
+            process.exit(1);
+          });
+          NODE
+
       - name: Run API-Football
-        if: steps.parser.outputs.provider == 'apifootball'
+        if: >-
+          steps.autosync.outputs.should_sync == 'true' &&
+          steps.parser.outputs.provider == 'apifootball'
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
@@ -110,8 +190,18 @@ jobs:
         run: node apis/api-football.js
 
       - name: Run 365Scores
-        if: steps.parser.outputs.provider == '365scores'
+        if: >-
+          steps.autosync.outputs.should_sync == 'true' &&
+          steps.parser.outputs.provider == '365scores'
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
         run: node apis/365scores.js
+
+      - name: Workflow Summary
+        if: always()
+        run: |
+          echo "## SportsHub API Sync" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Event: $GITHUB_EVENT_NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Branch: $GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Run status: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
