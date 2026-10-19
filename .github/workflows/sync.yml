@@ -27,7 +27,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
 
       - name: Install dependencies
         run: |
@@ -50,6 +49,11 @@ jobs:
 
           async function main() {
             try {
+              if (!process.env.FIREBASE_SERVICE_ACCOUNT ||
+                  !process.env.FIREBASE_DATABASE_URL) {
+                throw new Error("Firebase secrets are missing.");
+              }
+
               const serviceAccount = JSON.parse(
                 process.env.FIREBASE_SERVICE_ACCOUNT
               );
@@ -60,9 +64,7 @@ jobs:
               });
 
               const db = admin.database();
-              const settingsRef = db.ref("syncSettings");
-
-              const snapshot = await settingsRef.once("value");
+              const snapshot = await db.ref("syncSettings").once("value");
               const settings = snapshot.val() || {};
 
               const enabled = settings.autoSyncEnabled === true;
@@ -70,15 +72,9 @@ jobs:
               let interval = Number(settings.syncIntervalMinutes || 15);
 
               if (![5, 10, 15].includes(interval)) {
-                console.log(
-                  "Invalid sync interval; using 15 minutes."
-                );
+                console.log("Invalid interval; using 15 minutes.");
                 interval = 15;
               }
-
-              console.log("Automatic Sync:", enabled);
-              console.log("Selected interval:", interval);
-              console.log("Event:", process.env.EVENT_NAME);
 
               let shouldSync = false;
               let reason = "";
@@ -90,33 +86,29 @@ jobs:
                 if (!enabled) {
                   reason = "Automatic Sync is OFF.";
                 } else {
-                  const now = Date.now();
+                  const lastSync = Number(
+                    settings.lastSuccessfulSync || 0
+                  );
 
-                  const lastSnapshot = await db
-                    .ref("syncSettings/lastSuccessfulSync")
-                    .once("value");
-
-                  const lastSync = Number(lastSnapshot.val() || 0);
+                  const elapsed = Date.now() - lastSync;
                   const intervalMs = interval * 60 * 1000;
 
-                  if (lastSync <= 0) {
+                  if (lastSync <= 0 || elapsed >= intervalMs) {
                     shouldSync = true;
-                    reason = "No previous successful sync recorded.";
-                  } else if (now - lastSync >= intervalMs) {
-                    shouldSync = true;
-                    reason = "Selected sync interval has elapsed.";
+                    reason = "Selected interval has elapsed.";
                   } else {
                     const remaining = Math.ceil(
-                      (intervalMs - (now - lastSync)) / 60000
+                      (intervalMs - elapsed) / 60000
                     );
-
-                    reason =
-                      "Waiting for selected interval. Approx. " +
-                      remaining + " minute(s) remaining.";
+                    reason = "Waiting approximately " +
+                      remaining + " more minute(s).";
                   }
                 }
               }
 
+              console.log("Automatic Sync:", enabled);
+              console.log("Interval:", interval);
+              console.log("Event:", process.env.EVENT_NAME);
               console.log("Should sync:", shouldSync);
               console.log("Reason:", reason);
 
@@ -124,12 +116,10 @@ jobs:
                 process.env.GITHUB_OUTPUT,
                 "should_sync=" + shouldSync + "\n"
               );
-
               fs.appendFileSync(
                 process.env.GITHUB_OUTPUT,
                 "interval=" + interval + "\n"
               );
-
               fs.appendFileSync(
                 process.env.GITHUB_OUTPUT,
                 "reason=" + reason.replace(/[\r\n]/g, " ") + "\n"
@@ -146,12 +136,6 @@ jobs:
             process.exit(1);
           });
           NODE
-
-      - name: Show Sync Decision
-        if: always()
-        run: |
-          echo "Automatic sync decision completed."
-          echo "Event: $GITHUB_EVENT_NAME"
 
       - name: Select API from Firebase
         id: parser
@@ -175,8 +159,7 @@ jobs:
                 databaseURL: process.env.FIREBASE_DATABASE_URL
               });
 
-              const snapshot = await admin
-                .database()
+              const snapshot = await admin.database()
                 .ref("settings")
                 .once("value");
 
@@ -187,8 +170,7 @@ jobs:
 
               if (!parser) {
                 throw new Error(
-                  "Selected parser configuration not found: " +
-                  parserKey
+                  "Selected parser not found: " + parserKey
                 );
               }
 
@@ -198,10 +180,7 @@ jobs:
 
               let provider;
 
-              if (
-                apiParser === "365" ||
-                apiParser === "365scores"
-              ) {
+              if (apiParser === "365" || apiParser === "365scores") {
                 provider = "365scores";
               } else if (
                 apiParser === "apifootball" ||
@@ -277,15 +256,11 @@ jobs:
                 databaseURL: process.env.FIREBASE_DATABASE_URL
               });
 
-              const now = Date.now();
+              await admin.database().ref("syncSettings").update({
+                lastSuccessfulSync: Date.now()
+              });
 
-              await admin.database()
-                .ref("syncSettings")
-                .update({
-                  lastSuccessfulSync: now
-                });
-
-              console.log("Successful sync timestamp saved:", now);
+              console.log("Successful sync timestamp saved.");
             } finally {
               if (admin.apps.length) {
                 await admin.app().delete();
