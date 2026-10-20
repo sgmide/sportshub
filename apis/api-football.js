@@ -74,7 +74,9 @@ function getDateOffset(days) {
         Number(values.year),
         Number(values.month) - 1,
         Number(values.day) + days,
-        12, 0, 0
+        12,
+        0,
+        0
     ));
 
     return [
@@ -145,7 +147,10 @@ async function fetchFixtures(date) {
         );
     }
 
-    console.log("Fetching API-Football:", date);
+    console.log(
+        "Fetching API-Football:",
+        date
+    );
 
     const response = await axios.get(DEFAULT_API_URL, {
         params: {
@@ -161,19 +166,25 @@ async function fetchFixtures(date) {
 
     const data = response.data;
 
-    if (data && data.errors &&
+    if (
+        data &&
+        data.errors &&
         (
             Array.isArray(data.errors)
                 ? data.errors.length > 0
                 : Object.keys(data.errors).length > 0
-        )) {
+        )
+    ) {
         throw new Error(
             "API-Football error: " +
             JSON.stringify(data.errors)
         );
     }
 
-    if (!data || !Array.isArray(data.response)) {
+    if (
+        !data ||
+        !Array.isArray(data.response)
+    ) {
         throw new Error(
             "Invalid API-Football response"
         );
@@ -232,7 +243,12 @@ function getMatchStatus(item) {
     }
 
     if ([
-        "1H", "2H", "3H", "4H", "5H", "LIVE"
+        "1H",
+        "2H",
+        "3H",
+        "4H",
+        "5H",
+        "LIVE"
     ].indexOf(code) !== -1) {
         return {
             status: "Live",
@@ -266,9 +282,11 @@ function convertFixture(item, oldMatch) {
     const fixtureId = Number(fixture.id);
     const timestamp = Date.parse(fixture.date);
 
-    if (!Number.isInteger(fixtureId) ||
+    if (
+        !Number.isInteger(fixtureId) ||
         fixtureId <= 0 ||
-        !Number.isFinite(timestamp)) {
+        !Number.isFinite(timestamp)
+    ) {
         return null;
     }
 
@@ -282,7 +300,7 @@ function convertFixture(item, oldMatch) {
 
     const status = getMatchStatus(item);
 
-    // Keep admin-entered fields.
+    // Preserve admin-entered fields.
     const preservedFields = [
         "streamUrl",
         "goalEvents",
@@ -295,9 +313,12 @@ function convertFixture(item, oldMatch) {
     const preserved = {};
 
     for (const key of preservedFields) {
-        if (Object.prototype.hasOwnProperty.call(
-            previous, key
-        )) {
+        if (
+            Object.prototype.hasOwnProperty.call(
+                previous,
+                key
+            )
+        ) {
             preserved[key] = previous[key];
         }
     }
@@ -306,31 +327,44 @@ function convertFixture(item, oldMatch) {
         gameId: fixtureId,
         fixtureId: fixtureId,
         apiFixtureId: fixtureId,
+
         apiProvider: "apifootball",
 
         competitionId:
-            league.id == null ? null : Number(league.id),
+            league.id == null
+                ? null
+                : Number(league.id),
 
-        league: league.name || "Unknown Competition",
-        competition: league.name || "Unknown Competition",
+        league:
+            league.name || "Unknown Competition",
+
+        competition:
+            league.name || "Unknown Competition",
+
         country: league.country || "",
         season: league.season || null,
+
         sportId: 1,
 
         home: home.name || "Home",
         away: away.name || "Away",
 
         homeTeamId:
-            home.id == null ? 0 : Number(home.id),
+            home.id == null
+                ? 0
+                : Number(home.id),
 
         awayTeamId:
-            away.id == null ? 0 : Number(away.id),
+            away.id == null
+                ? 0
+                : Number(away.id),
 
         homeScore: homeScore,
         awayScore: awayScore,
 
         score:
-            homeScore !== "" && awayScore !== ""
+            homeScore !== "" &&
+            awayScore !== ""
                 ? homeScore + " - " + awayScore
                 : "VS",
 
@@ -347,7 +381,7 @@ function convertFixture(item, oldMatch) {
         lastUpdated: Date.now()
     });
 
-    // Only use API stadium when no admin value exists.
+    // Use API stadium only when no admin value exists.
     if (!match.stadium) {
         match.stadium =
             fixture.venue && fixture.venue.name
@@ -355,7 +389,7 @@ function convertFixture(item, oldMatch) {
                 : "";
     }
 
-    // Only use API logos when there are no existing values.
+    // Use API logos only when there are no existing values.
     if (!match.homeLogo) {
         match.homeLogo = home.logo || "";
     }
@@ -368,17 +402,98 @@ function convertFixture(item, oldMatch) {
 }
 
 // ==================================================
+// DETECT OLD 365SCORES FOOTBALL MATCHES
+// ==================================================
+
+function is365ScoresFootballMatch(match) {
+    if (
+        !match ||
+        typeof match !== "object"
+    ) {
+        return false;
+    }
+
+    /*
+     * Only consider football records.
+     *
+     * Do not delete basketball or records whose sport
+     * cannot be safely identified.
+     */
+
+    const sportId = String(
+        match.sportId == null
+            ? ""
+            : match.sportId
+    );
+
+    if (sportId !== "1") {
+        return false;
+    }
+
+    const provider = String(
+        match.apiProvider || ""
+    ).trim().toLowerCase();
+
+    // Explicit provider identification.
+    if (
+        provider === "365scores" ||
+        provider === "365"
+    ) {
+        return true;
+    }
+
+    /*
+     * Legacy records may not have apiProvider.
+     *
+     * Require BOTH a known 365Scores logo URL
+     * and both competitor IDs.
+     *
+     * Missing apiProvider alone is NOT enough.
+     */
+
+    const homeLogo = String(
+        match.homeLogo || ""
+    ).toLowerCase();
+
+    const awayLogo = String(
+        match.awayLogo || ""
+    ).toLowerCase();
+
+    const has365ScoresLogo =
+        homeLogo.includes(
+            "imagecache.365scores.com"
+        ) ||
+        awayLogo.includes(
+            "imagecache.365scores.com"
+        );
+
+    const has365ScoresCompetitors =
+        match.homeCompetitorId != null &&
+        match.awayCompetitorId != null;
+
+    return (
+        has365ScoresLogo &&
+        has365ScoresCompetitors
+    );
+}
+
+// ==================================================
 // COMPETITION SELECTION
 // ==================================================
 
-function isCompetitionSelected(selection, oldCompetition) {
+function isCompetitionSelected(
+    selection,
+    oldCompetition
+) {
     if (selection === true) {
         return true;
     }
 
-    if (selection &&
+    if (
+        selection &&
         typeof selection === "object" &&
-        selection.selected === true) {
+        selection.selected === true
+    ) {
         return true;
     }
 
@@ -386,9 +501,11 @@ function isCompetitionSelected(selection, oldCompetition) {
         return false;
     }
 
-    if (selection &&
+    if (
+        selection &&
         typeof selection === "object" &&
-        selection.selected === false) {
+        selection.selected === false
+    ) {
         return false;
     }
 
@@ -415,14 +532,20 @@ async function main() {
         );
     }
 
-    // Read parser settings.
+    // ----------------------------------------------
+    // Read parser settings
+    // ----------------------------------------------
+
     const settingsSnapshot =
         await db.ref("settings").once("value");
 
-    const settings = settingsSnapshot.val() || {};
+    const settings =
+        settingsSnapshot.val() || {};
 
     const selectedParser =
-        String(settings.selected_parser || "parse1");
+        String(
+            settings.selected_parser || "parse1"
+        );
 
     const parserConfig =
         settings.parse &&
@@ -431,26 +554,38 @@ async function main() {
             : {};
 
     const apiParser =
-        String(parserConfig.api_parser || "")
-            .trim()
-            .toLowerCase();
+        String(
+            parserConfig.api_parser || ""
+        ).trim().toLowerCase();
 
-    if (apiParser &&
+    if (
+        apiParser &&
         [
             "apifootball",
             "api-football",
             "football"
-        ].indexOf(apiParser) === -1) {
+        ].indexOf(apiParser) === -1
+    ) {
         throw new Error(
             "Selected parser is not API-Football: " +
             apiParser
         );
     }
 
-    console.log("Selected parser:", selectedParser);
-    console.log("API provider:", apiParser || "apifootball");
+    console.log(
+        "Selected parser:",
+        selectedParser
+    );
 
-    // Read existing Firebase data.
+    console.log(
+        "API provider:",
+        apiParser || "apifootball"
+    );
+
+    // ----------------------------------------------
+    // Read existing Firebase data
+    // ----------------------------------------------
+
     const results = await Promise.all([
         db.ref("competition_selection").once("value"),
         db.ref("competitions").once("value"),
@@ -466,15 +601,21 @@ async function main() {
     const existingMatches =
         results[2].val() || {};
 
-    // Fetch yesterday, today and tomorrow.
+    // ----------------------------------------------
+    // Fetch yesterday, today and tomorrow
+    // ----------------------------------------------
+
     const discoveredFixtures = [];
+
     let successfulRequests = 0;
+    let failedRequests = 0;
 
     for (const offset of [-1, 0, 1]) {
         const date = getDateOffset(offset);
 
         try {
-            const fixtures = await fetchFixtures(date);
+            const fixtures =
+                await fetchFixtures(date);
 
             discoveredFixtures.push.apply(
                 discoveredFixtures,
@@ -482,24 +623,34 @@ async function main() {
             );
 
             successfulRequests++;
+
         } catch (error) {
+            failedRequests++;
+
             console.error(
                 "Fixture request failed:",
                 date,
-                error.response && error.response.data
-                    ? JSON.stringify(error.response.data)
+                error.response &&
+                error.response.data
+                    ? JSON.stringify(
+                        error.response.data
+                    )
                     : error.message
             );
         }
 
         await new Promise(function (resolve) {
-            setTimeout(resolve, REQUEST_DELAY);
+            setTimeout(
+                resolve,
+                REQUEST_DELAY
+            );
         });
     }
 
     if (successfulRequests === 0) {
         throw new Error(
-            "All API requests failed. Firebase data was not changed."
+            "All API requests failed. " +
+            "Firebase data was not changed."
         );
     }
 
@@ -507,6 +658,20 @@ async function main() {
         "Total fixtures received:",
         discoveredFixtures.length
     );
+
+    console.log(
+        "Successful requests:",
+        successfulRequests
+    );
+
+    console.log(
+        "Failed requests:",
+        failedRequests
+    );
+
+    // ----------------------------------------------
+    // Prepare Firebase updates
+    // ----------------------------------------------
 
     const competitionUpdates = {};
     const selectionUpdates = {};
@@ -517,19 +682,30 @@ async function main() {
     let newCompetitionCount = 0;
     let selectedMatchCount = 0;
 
+    // ----------------------------------------------
+    // Process fixtures
+    // ----------------------------------------------
+
     for (const item of discoveredFixtures) {
         const league = item.league || {};
-        const competitionId = Number(league.id);
 
-        if (!Number.isInteger(competitionId) ||
-            competitionId <= 0) {
+        const competitionId =
+            Number(league.id);
+
+        if (
+            !Number.isInteger(competitionId) ||
+            competitionId <= 0
+        ) {
             continue;
         }
 
-        const competitionKey = String(competitionId);
+        const competitionKey =
+            String(competitionId);
 
         const oldCompetition =
-            existingCompetitions[competitionKey] || {};
+            existingCompetitions[
+                competitionKey
+            ] || {};
 
         const hasSelection =
             Object.prototype.hasOwnProperty.call(
@@ -537,15 +713,19 @@ async function main() {
                 competitionKey
             );
 
-        const selected = isCompetitionSelected(
-            hasSelection
-                ? competitionSelection[competitionKey]
-                : undefined,
-            oldCompetition
-        );
+        const selected =
+            isCompetitionSelected(
+                hasSelection
+                    ? competitionSelection[
+                        competitionKey
+                    ]
+                    : undefined,
+                oldCompetition
+            );
 
         const competitionName =
-            league.name || "Unknown Competition";
+            league.name ||
+            "Unknown Competition";
 
         competitionUpdates[competitionKey] = {
             id: competitionId,
@@ -562,7 +742,8 @@ async function main() {
 
         // Initialize only missing selection values.
         if (!hasSelection) {
-            selectionUpdates[competitionKey] = selected;
+            selectionUpdates[competitionKey] =
+                selected;
         }
 
         // Sync matches only for selected competitions.
@@ -571,15 +752,19 @@ async function main() {
         }
 
         const fixtureId = Number(
-            item.fixture && item.fixture.id
+            item.fixture &&
+            item.fixture.id
         );
 
-        if (!Number.isInteger(fixtureId) ||
-            fixtureId <= 0) {
+        if (
+            !Number.isInteger(fixtureId) ||
+            fixtureId <= 0
+        ) {
             continue;
         }
 
-        const fixtureKey = String(fixtureId);
+        const fixtureKey =
+            String(fixtureId);
 
         if (seenFixtures.has(fixtureKey)) {
             continue;
@@ -590,48 +775,200 @@ async function main() {
         const oldMatch =
             existingMatches[fixtureKey] || {};
 
-        const match = convertFixture(item, oldMatch);
+        const match =
+            convertFixture(
+                item,
+                oldMatch
+            );
 
         if (!match) {
             continue;
         }
 
         matchUpdates[fixtureKey] = match;
+
         selectedMatchCount++;
     }
 
-    // Build a single multi-location update.
+    // ----------------------------------------------
+    // Build Firebase multi-location update
+    // ----------------------------------------------
+
     const updates = {};
 
-    for (const key of Object.keys(competitionUpdates)) {
-        updates["competitions/" + key] =
-            competitionUpdates[key];
+    for (
+        const key of Object.keys(
+            competitionUpdates
+        )
+    ) {
+        updates[
+            "competitions/" + key
+        ] = competitionUpdates[key];
     }
 
-    for (const key of Object.keys(selectionUpdates)) {
-        updates["competition_selection/" + key] =
-            selectionUpdates[key];
+    for (
+        const key of Object.keys(
+            selectionUpdates
+        )
+    ) {
+        updates[
+            "competition_selection/" + key
+        ] = selectionUpdates[key];
     }
 
-    for (const key of Object.keys(matchUpdates)) {
-        updates["matches/" + key] =
-            matchUpdates[key];
+    for (
+        const key of Object.keys(
+            matchUpdates
+        )
+    ) {
+        updates[
+            "matches/" + key
+        ] = matchUpdates[key];
     }
+
+    // ----------------------------------------------
+    // SAFE OLD 365SCORES CLEANUP
+    // ----------------------------------------------
+
+    let removed365ScoresCount = 0;
+
+    /*
+     * Do not delete legacy records if:
+     *
+     * 1. Any date request failed.
+     * 2. The API returned no fixtures.
+     * 3. No selected API-Football match was synced.
+     *
+     * This reduces the chance of deleting old data
+     * when API access or configuration is broken.
+     */
+
+    const canCleanup365Scores =
+        successfulRequests === 3 &&
+        failedRequests === 0 &&
+        discoveredFixtures.length > 0 &&
+        selectedMatchCount > 0;
+
+    if (canCleanup365Scores) {
+        console.log(
+            "Checking old 365Scores football matches..."
+        );
+
+        for (
+            const matchId of Object.keys(
+                existingMatches
+            )
+        ) {
+            const oldMatch =
+                existingMatches[matchId];
+
+            if (
+                !is365ScoresFootballMatch(
+                    oldMatch
+                )
+            ) {
+                continue;
+            }
+
+            /*
+             * Never delete a match that is being
+             * refreshed by API-Football in this run.
+             */
+
+            if (
+                Object.prototype.hasOwnProperty.call(
+                    matchUpdates,
+                    matchId
+                )
+            ) {
+                console.log(
+                    "Keeping refreshed API-Football match:",
+                    matchId
+                );
+
+                continue;
+            }
+
+            updates[
+                "matches/" + matchId
+            ] = null;
+
+            removed365ScoresCount++;
+
+            console.log(
+                "Scheduled old 365Scores football match for removal:",
+                matchId,
+                oldMatch.home || "",
+                "vs",
+                oldMatch.away || ""
+            );
+        }
+
+    } else {
+        console.log(
+            "365Scores cleanup skipped for safety."
+        );
+
+        console.log(
+            "Cleanup requires all 3 requests to succeed, " +
+            "fixtures to be received, and selected matches " +
+            "to be synced."
+        );
+    }
+
+    // ----------------------------------------------
+    // Commit Firebase updates
+    // ----------------------------------------------
 
     if (Object.keys(updates).length > 0) {
         await db.ref().update(updates);
     }
 
+    // ----------------------------------------------
+    // SUMMARY
+    // ----------------------------------------------
+
     console.log("==================================");
     console.log("API-Football Sync Completed");
-    console.log("Successful requests:", successfulRequests);
-    console.log("Fixtures received:", discoveredFixtures.length);
+    console.log("==================================");
+
+    console.log(
+        "Successful requests:",
+        successfulRequests
+    );
+
+    console.log(
+        "Failed requests:",
+        failedRequests
+    );
+
+    console.log(
+        "Fixtures received:",
+        discoveredFixtures.length
+    );
+
     console.log(
         "Competitions processed:",
-        Object.keys(competitionUpdates).length
+        Object.keys(
+            competitionUpdates
+        ).length
     );
-    console.log("New competitions:", newCompetitionCount);
-    console.log("Selected matches synced:", selectedMatchCount);
+
+    console.log(
+        "New competitions:",
+        newCompetitionCount
+    );
+
+    console.log(
+        "Selected matches synced:",
+        selectedMatchCount
+    );
+
+    console.log(
+        "Old 365Scores football matches removed:",
+        removed365ScoresCount
+    );
+
     console.log("==================================");
 }
 
