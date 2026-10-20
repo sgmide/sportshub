@@ -17,6 +17,9 @@ const TIME_ZONE = "Asia/Kolkata";
 const REQUEST_TIMEOUT = 30000;
 const REQUEST_DELAY = 500;
 
+const CURRENT_PROVIDER = "365scores";
+const PROVIDER_STATE_PATH = "syncSettings/currentProvider";
+
 const HEADERS = {
     "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
@@ -68,6 +71,7 @@ function initializeFirebase() {
 // ==================================================
 
 function delay(ms) {
+
     return new Promise(function (resolve) {
         setTimeout(resolve, ms);
     });
@@ -86,6 +90,7 @@ function getDateParts(date) {
     const result = {};
 
     for (const part of parts) {
+
         if (part.type !== "literal") {
             result[part.type] = part.value;
         }
@@ -143,6 +148,7 @@ function getDateOffset(days) {
     const values = {};
 
     for (const part of parts) {
+
         if (part.type !== "literal") {
             values[part.type] = part.value;
         }
@@ -197,6 +203,31 @@ function firebaseKey(value) {
     return String(value).replace(/[.#$\[\]\/]/g, "_");
 }
 
+function normalizeProvider(value) {
+
+    const provider =
+        String(value || "")
+            .trim()
+            .toLowerCase();
+
+    if (
+        provider === "365" ||
+        provider === "365scores"
+    ) {
+        return "365scores";
+    }
+
+    if (
+        provider === "apifootball" ||
+        provider === "api-football" ||
+        provider === "api_football"
+    ) {
+        return "apifootball";
+    }
+
+    return "";
+}
+
 // ==================================================
 // FETCH JSON
 // ==================================================
@@ -210,6 +241,7 @@ async function fetchJson(url) {
     });
 
     if (!response.ok) {
+
         throw new Error(
             "HTTP " + response.status + " - " + url
         );
@@ -261,7 +293,9 @@ async function fetchGames(apiUrl, sportId, date) {
     const data = await fetchJson(url);
 
     if (!data || !Array.isArray(data.games)) {
+
         console.log("No games array returned");
+
         return [];
     }
 
@@ -296,12 +330,14 @@ async function fetchSportsAndCompetitions(apiUrl) {
     const data = await fetchJson(url.toString());
 
     if (!data || !Array.isArray(data.sports)) {
+
         throw new Error(
             "API response does not contain sports array"
         );
     }
 
     if (!Array.isArray(data.competitions)) {
+
         throw new Error(
             "API response does not contain competitions array"
         );
@@ -340,11 +376,12 @@ function normalizeSportIds(settings) {
 
             const item = selectedSports[i];
 
-            // Support an array of sport IDs.
+            // Array of sport IDs.
             if (
                 typeof item === "number" ||
                 typeof item === "string"
             ) {
+
                 const id = toPositiveInteger(item);
 
                 if (id !== null) {
@@ -354,7 +391,7 @@ function normalizeSportIds(settings) {
                 continue;
             }
 
-            // Support an array of objects.
+            // Array of sport objects.
             if (item && typeof item === "object") {
 
                 const id = toPositiveInteger(item.id);
@@ -374,7 +411,7 @@ function normalizeSportIds(settings) {
 
             const item = selectedSports[key];
 
-            // The Android app saves { "1": true, "2": false }.
+            // Example: { "1": true, "2": false }
             if (item === true) {
 
                 const id = toPositiveInteger(key);
@@ -386,7 +423,7 @@ function normalizeSportIds(settings) {
                 continue;
             }
 
-            // Also support { "1": { "selected": true } }.
+            // Example: { "1": { "selected": true } }
             if (item && typeof item === "object") {
 
                 if (item.selected === false) {
@@ -404,9 +441,8 @@ function normalizeSportIds(settings) {
         }
     }
 
-    // Support older array-based settings:
+    // Legacy array format:
     // [null, true, true, false, ...]
-    // In this format, the array index represents the sport ID.
     if (
         Array.isArray(selectedSports) &&
         selectedSports.some(function (item, index) {
@@ -422,7 +458,7 @@ function normalizeSportIds(settings) {
         }
     }
 
-    // Legacy fallback only when no selection data exists.
+    // Legacy fallback.
     if (
         result.size === 0 &&
         (
@@ -446,161 +482,167 @@ function normalizeSportIds(settings) {
 // MATCH STATUS
 // ==================================================
 
+function getMatchStatus(game) {
 
-        function getMatchStatus(game) {
+    function clean(value) {
 
-function clean(value) {
-    return String(value == null ? "" : value)
-        .trim()
-        .toLowerCase()
-        .replace(/[_-]+/g, " ")
-        .replace(/\s+/g, " ");
-}
+        return String(value == null ? "" : value)
+            .trim()
+            .toLowerCase()
+            .replace(/[_-]+/g, " ")
+            .replace(/\s+/g, " ");
+    }
 
-const statusText = clean(game.statusText);
-const shortText = clean(game.shortStatusText);
+    const statusText = clean(game.statusText);
 
-// API response-il undaakaan saadhyathayulla
-// alternate status fields.
-const statusName = clean(
-    game.status ||
-    game.statusName ||
-    game.gameStatus ||
-    game.gameStatusText
-);
+    const shortText = clean(game.shortStatusText);
 
-const shortName = clean(
-    game.shortStatus ||
-    game.statusCode ||
-    game.gameStatusCode
-);
-
-const texts = [
-    statusText,
-    shortText,
-    statusName,
-    shortName
-].filter(Boolean);
-
-const normalized = texts.join(" ");
-
-// POSTPONED
-if (
-    /\b(postponed|ppd)\b/.test(normalized)
-) {
-    return {
-        status: "Postponed",
-        shortStatus: "PPD"
-    };
-}
-
-// CANCELLED
-if (
-    /\b(cancelled|canceled|canc)\b/.test(normalized)
-) {
-    return {
-        status: "Cancelled",
-        shortStatus: "CANC"
-    };
-}
-
-// ABANDONED
-if (
-    /\b(abandoned|abd)\b/.test(normalized)
-) {
-    return {
-        status: "Abandoned",
-        shortStatus: "ABD"
-    };
-}
-
-// AFTER PENALTIES
-if (
-    /\b(after penalties|penalties|penalty shootout)\b/
-        .test(normalized) ||
-    shortName === "ap"
-) {
-    return {
-        status: "After Penalties",
-        shortStatus: "AP"
-    };
-}
-
-// FULL TIME / FINISHED
-if (
-    /\b(finished|full time|fulltime|ended|final)\b/
-        .test(normalized) ||
-    statusText === "ft" ||
-    shortText === "ft" ||
-    statusName === "ft" ||
-    shortName === "ft"
-) {
-    return {
-        status: "Finished",
-        shortStatus: "FT"
-    };
-}
-
-// HALF TIME
-if (
-    statusText === "ht" ||
-    shortText === "ht" ||
-    statusName === "ht" ||
-    shortName === "ht" ||
-    /\b(half time|halftime)\b/.test(normalized)
-) {
-    return {
-        status: "Half Time",
-        shortStatus: "HT"
-    };
-}
-
-// EXTRA TIME
-if (
-    statusText === "et" ||
-    shortText === "et" ||
-    statusName === "et" ||
-    shortName === "et" ||
-    /\b(extra time)\b/.test(normalized)
-) {
-    return {
-        status: "Extra Time",
-        shortStatus: "ET"
-    };
-}
-
-// LIVE
-if (
-    /\b(live|in progress|in play|1st half|2nd half)\b/
-        .test(normalized) ||
-    /\b\d+(st|nd|rd|th) quarter\b/.test(normalized) ||
-    /\bperiod \d+\b/.test(normalized)
-) {
-    return {
-        status: "Live",
-        shortStatus:
-            game.shortStatusText ||
-            game.statusText ||
-            "LIVE"
-    };
-}
-
-// Unknown status-ne Live ennu assume cheyyaruth.
-return {
-    status:
-        game.statusText ||
+    const statusName = clean(
         game.status ||
         game.statusName ||
-        "Upcoming",
+        game.gameStatus ||
+        game.gameStatusText
+    );
 
-    shortStatus:
-        game.shortStatusText ||
+    const shortName = clean(
         game.shortStatus ||
         game.statusCode ||
-        "NS"
-};
+        game.gameStatusCode
+    );
 
-        }
+    const texts = [
+        statusText,
+        shortText,
+        statusName,
+        shortName
+    ].filter(Boolean);
+
+    const normalized = texts.join(" ");
+
+    // POSTPONED
+    if (
+        /\b(postponed|ppd)\b/.test(normalized)
+    ) {
+
+        return {
+            status: "Postponed",
+            shortStatus: "PPD"
+        };
+    }
+
+    // CANCELLED
+    if (
+        /\b(cancelled|canceled|canc)\b/.test(normalized)
+    ) {
+
+        return {
+            status: "Cancelled",
+            shortStatus: "CANC"
+        };
+    }
+
+    // ABANDONED
+    if (
+        /\b(abandoned|abd)\b/.test(normalized)
+    ) {
+
+        return {
+            status: "Abandoned",
+            shortStatus: "ABD"
+        };
+    }
+
+    // AFTER PENALTIES
+    if (
+        /\b(after penalties|penalties|penalty shootout)\b/
+            .test(normalized) ||
+        shortName === "ap"
+    ) {
+
+        return {
+            status: "After Penalties",
+            shortStatus: "AP"
+        };
+    }
+
+    // FULL TIME
+    if (
+        /\b(finished|full time|fulltime|ended|final)\b/
+            .test(normalized) ||
+        statusText === "ft" ||
+        shortText === "ft" ||
+        statusName === "ft" ||
+        shortName === "ft"
+    ) {
+
+        return {
+            status: "Finished",
+            shortStatus: "FT"
+        };
+    }
+
+    // HALF TIME
+    if (
+        statusText === "ht" ||
+        shortText === "ht" ||
+        statusName === "ht" ||
+        shortName === "ht" ||
+        /\b(half time|halftime)\b/.test(normalized)
+    ) {
+
+        return {
+            status: "Half Time",
+            shortStatus: "HT"
+        };
+    }
+
+    // EXTRA TIME
+    if (
+        statusText === "et" ||
+        shortText === "et" ||
+        statusName === "et" ||
+        shortName === "et" ||
+        /\b(extra time)\b/.test(normalized)
+    ) {
+
+        return {
+            status: "Extra Time",
+            shortStatus: "ET"
+        };
+    }
+
+    // LIVE
+    if (
+        /\b(live|in progress|in play|1st half|2nd half)\b/
+            .test(normalized) ||
+        /\b\d+(st|nd|rd|th) quarter\b/.test(normalized) ||
+        /\bperiod \d+\b/.test(normalized)
+    ) {
+
+        return {
+            status: "Live",
+            shortStatus:
+                game.shortStatusText ||
+                game.statusText ||
+                "LIVE"
+        };
+    }
+
+    return {
+        status:
+            game.statusText ||
+            game.status ||
+            game.statusName ||
+            "Upcoming",
+
+        shortStatus:
+            game.shortStatusText ||
+            game.shortStatus ||
+            game.statusCode ||
+            "NS"
+    };
+}
+
 // ==================================================
 // CONVERT MATCH
 // ==================================================
@@ -679,6 +721,9 @@ function convertMatch(game, oldMatch) {
         {
             gameId: gameId,
 
+            // Provider identity.
+            apiProvider: "365scores",
+
             sportId:
                 toPositiveInteger(game.sportId) || 1,
 
@@ -751,6 +796,81 @@ function convertMatch(game, oldMatch) {
 }
 
 // ==================================================
+// IDENTIFY API-FOOTBALL MATCHES
+// ==================================================
+
+function isApiFootballMatch(match) {
+
+    if (!match || typeof match !== "object") {
+        return false;
+    }
+
+    const sportId =
+        toPositiveInteger(match.sportId);
+
+    // Football only. Never remove basketball
+    // or records whose sport cannot be confirmed.
+    if (sportId !== 1) {
+        return false;
+    }
+
+    const provider =
+        normalizeProvider(match.apiProvider);
+
+    // Explicit provider tag is the safest check.
+    return provider === "apifootball";
+}
+
+// ==================================================
+// INFER PREVIOUS PROVIDER
+// ==================================================
+
+function inferPreviousProvider(existingMatches) {
+
+    let foundApiFootball = false;
+    let found365Scores = false;
+
+    for (const key of Object.keys(existingMatches || {})) {
+
+        const match = existingMatches[key];
+
+        if (!match || typeof match !== "object") {
+            continue;
+        }
+
+        const sportId =
+            toPositiveInteger(match.sportId);
+
+        if (sportId !== 1) {
+            continue;
+        }
+
+        const provider =
+            normalizeProvider(match.apiProvider);
+
+        if (provider === "apifootball") {
+            foundApiFootball = true;
+        }
+
+        if (provider === "365scores") {
+            found365Scores = true;
+        }
+    }
+
+    // Infer only if the data clearly indicates
+    // one provider, not a mixture of both.
+    if (foundApiFootball && !found365Scores) {
+        return "apifootball";
+    }
+
+    if (found365Scores && !foundApiFootball) {
+        return "365scores";
+    }
+
+    return "";
+}
+
+// ==================================================
 // MAIN
 // ==================================================
 
@@ -796,6 +916,7 @@ async function main() {
         apiParser !== "365" &&
         apiParser !== "365scores"
     ) {
+
         throw new Error(
             "Selected parser is not 365Scores: " +
             apiParser
@@ -803,6 +924,7 @@ async function main() {
     }
 
     if (!apiUrl) {
+
         throw new Error(
             "365Scores api_url is empty"
         );
@@ -868,6 +990,29 @@ async function main() {
     const existingMatches =
         matchesSnapshot.val() || {};
 
+    const providerSnapshot =
+        await db.ref(PROVIDER_STATE_PATH)
+            .once("value");
+
+    let previousProvider =
+        normalizeProvider(providerSnapshot.val());
+
+    if (!previousProvider) {
+
+        previousProvider =
+            inferPreviousProvider(existingMatches);
+    }
+
+    console.log(
+        "Previous provider:",
+        previousProvider || "(not identified)"
+    );
+
+    console.log(
+        "Current provider:",
+        CURRENT_PROVIDER
+    );
+
     // ----------------------------------------------
     // PREPARE SPORTS UPDATES
     // ----------------------------------------------
@@ -894,21 +1039,30 @@ async function main() {
             oldSport,
             {
                 id: sportId,
-                name: sport.name || oldSport.name || "",
+
+                name:
+                    sport.name ||
+                    oldSport.name ||
+                    "",
+
                 nameForURL:
                     sport.nameForURL ||
                     oldSport.nameForURL ||
                     "",
+
                 totalGames:
                     Number(sport.totalGames || 0),
+
                 liveGames:
                     Number(sport.liveGames || 0),
+
                 imageVersion:
                     Number(sport.imageVersion || 0)
             }
         );
 
         if (selectedSportSet.has(sportId)) {
+
             selectedSportNames[sportId] =
                 sport.name || String(sportId);
         }
@@ -938,8 +1092,6 @@ async function main() {
             continue;
         }
 
-        // Only store competitions belonging to
-        // sports selected in SportActivity.
         if (!selectedSportSet.has(sportId)) {
             continue;
         }
@@ -973,21 +1125,32 @@ async function main() {
 
         competitionUpdates[key] = {
             id: competitionId,
-            name: getCompetitionName(competition),
+
+            name:
+                getCompetitionName(competition),
+
             sportId: sportId,
+
             countryId:
                 toPositiveInteger(competition.countryId),
+
             nameForURL:
                 competition.nameForURL || "",
+
             selected: selected,
+
             totalGames:
                 Number(competition.totalGames || 0),
+
             liveGames:
                 Number(competition.liveGames || 0),
+
             hasStandings:
                 competition.hasStandings === true,
+
             hasBrackets:
                 competition.hasBrackets === true,
+
             imageVersion:
                 Number(competition.imageVersion || 0)
         };
@@ -1001,23 +1164,22 @@ async function main() {
     // WRITE SPORTS AND COMPETITIONS
     // ----------------------------------------------
 
-    // Do not delete old sports or competitions.
-    // Existing records outside this API response
-    // remain untouched.
-
     const catalogUpdates = {};
 
     for (const key of Object.keys(sportsUpdates)) {
+
         catalogUpdates["sports/" + key] =
             sportsUpdates[key];
     }
 
     for (const key of Object.keys(competitionUpdates)) {
+
         catalogUpdates["competitions/" + key] =
             competitionUpdates[key];
     }
 
     for (const key of Object.keys(selectionUpdates)) {
+
         catalogUpdates["competition_selection/" + key] =
             selectionUpdates[key];
     }
@@ -1054,6 +1216,9 @@ async function main() {
     const discoveredGames = [];
 
     let successfulRequests = 0;
+
+    const expectedRequests =
+        selectedSportIds.length * 3;
 
     for (const sportId of selectedSportIds) {
 
@@ -1093,7 +1258,7 @@ async function main() {
 
         throw new Error(
             "All games API requests failed. " +
-            "Catalog was updated, but matches were not changed."
+            "Matches were not changed."
         );
     }
 
@@ -1105,10 +1270,8 @@ async function main() {
     const seenGames = new Set();
 
     let selectedGameCount = 0;
+    let selectedFootballMatchCount = 0;
 
-    // Use the updated competition selection, but keep
-    // existing flags for competitions not returned
-    // in this API response.
     const effectiveSelection = Object.assign(
         {},
         existingSelection,
@@ -1180,16 +1343,157 @@ async function main() {
         matchUpdates[gameKey] = match;
 
         selectedGameCount++;
+
+        if (
+            toPositiveInteger(match.sportId) === 1
+        ) {
+            selectedFootballMatchCount++;
+        }
     }
 
     // ----------------------------------------------
-    // WRITE MATCHES
+    // PROVIDER SWITCH CLEANUP
     // ----------------------------------------------
 
-    if (Object.keys(matchUpdates).length > 0) {
+    const cleanupUpdates = {};
 
-        await db.ref("matches")
-            .update(matchUpdates);
+    let deletedApiFootballCount = 0;
+
+    const allRequestsSucceeded =
+        successfulRequests === expectedRequests;
+
+    const safeToCleanup =
+        allRequestsSucceeded &&
+        selectedFootballMatchCount > 0;
+
+    if (
+        safeToCleanup &&
+        previousProvider === "apifootball" &&
+        CURRENT_PROVIDER === "365scores"
+    ) {
+
+        console.log(
+            "Provider switch detected: API-Football -> 365Scores"
+        );
+
+        for (const key of Object.keys(existingMatches)) {
+
+            const oldMatch =
+                existingMatches[key];
+
+            if (!isApiFootballMatch(oldMatch)) {
+                continue;
+            }
+
+            // Do not delete a match being written by
+            // this 365Scores sync.
+            if (
+                Object.prototype.hasOwnProperty.call(
+                    matchUpdates,
+                    key
+                )
+            ) {
+                continue;
+            }
+
+            cleanupUpdates["matches/" + key] = null;
+
+            deletedApiFootballCount++;
+        }
+
+        console.log(
+            "Old API-Football football matches marked for deletion:",
+            deletedApiFootballCount
+        );
+
+    } else if (
+        previousProvider &&
+        previousProvider !== CURRENT_PROVIDER
+    ) {
+
+        console.log(
+            "Provider changed, but cleanup was skipped."
+        );
+
+        console.log(
+            "All requests must succeed and at least one selected football match must sync."
+        );
+
+    } else if (!previousProvider) {
+
+        console.log(
+            "Previous provider is unknown."
+        );
+
+        console.log(
+            "No provider cleanup will be performed on this run."
+        );
+    }
+
+    // ----------------------------------------------
+    // COMMIT MATCHES + CLEANUP + PROVIDER STATE
+    // ----------------------------------------------
+
+    const finalUpdates = {};
+
+    for (const key of Object.keys(matchUpdates)) {
+
+        finalUpdates["matches/" + key] =
+            matchUpdates[key];
+    }
+
+    for (const path of Object.keys(cleanupUpdates)) {
+
+        finalUpdates[path] =
+            cleanupUpdates[path];
+    }
+
+    // Update the provider marker only after a complete
+    // successful fetch and at least one selected
+    // football match has been prepared.
+    //
+    // If requests fail, the previous provider marker
+    // remains unchanged so cleanup can be retried later.
+    if (safeToCleanup) {
+
+        finalUpdates[PROVIDER_STATE_PATH] =
+            CURRENT_PROVIDER;
+    }
+
+    if (Object.keys(finalUpdates).length > 0) {
+
+        await db.ref().update(finalUpdates);
+    }
+
+    console.log(
+        "Matches updated:",
+        Object.keys(matchUpdates).length
+    );
+
+    console.log(
+        "Selected football matches:",
+        selectedFootballMatchCount
+    );
+
+    console.log(
+        "API-Football matches deleted:",
+        deletedApiFootballCount
+    );
+
+    console.log(
+        "All games requests successful:",
+        allRequestsSucceeded
+    );
+
+    if (
+        safeToCleanup &&
+        previousProvider !== CURRENT_PROVIDER
+    ) {
+
+        console.log(
+            "Provider state updated:",
+            CURRENT_PROVIDER
+        );
     }
 
     // ----------------------------------------------
@@ -1198,34 +1502,49 @@ async function main() {
 
     console.log("==================================");
     console.log("365Scores Sync Completed");
+
     console.log(
         "Selected sport count:",
         selectedSportIds.length
     );
+
     console.log(
         "Sports updated:",
         Object.keys(sportsUpdates).length
     );
+
     console.log(
         "Competitions updated:",
         Object.keys(competitionUpdates).length
     );
+
     console.log(
         "New competitions:",
         newCompetitionCount
     );
+
     console.log(
         "Successful games requests:",
-        successfulRequests
+        successfulRequests,
+        "/",
+        expectedRequests
     );
+
     console.log(
         "Games received:",
         discoveredGames.length
     );
+
     console.log(
         "Selected matches synced:",
         selectedGameCount
     );
+
+    console.log(
+        "API-Football matches deleted:",
+        deletedApiFootballCount
+    );
+
     console.log("==================================");
 }
 
@@ -1250,9 +1569,13 @@ main()
         );
 
         if (admin.apps.length > 0) {
+
             try {
+
                 await admin.app().delete();
+
             } catch (e) {
+
                 console.error(e.message);
             }
         }
