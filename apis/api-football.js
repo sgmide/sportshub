@@ -10,7 +10,12 @@ const TIME_ZONE = "Asia/Kolkata";
 const REQUEST_TIMEOUT = 30000;
 const REQUEST_DELAY = 500;
 
-const API_KEY = process.env.API_FOOTBALL_KEY || "";
+const API_KEY =
+    process.env.API_FOOTBALL_KEY || "";
+
+const CURRENT_PROVIDER = "apifootball";
+const PROVIDER_STATE_PATH =
+    "syncSettings/currentProvider";
 
 // ==================================================
 // FIREBASE
@@ -43,7 +48,9 @@ function initializeFirebase() {
         JSON.parse(serviceAccountJson);
 
     admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
+        credential: admin.credential.cert(
+            serviceAccount
+        ),
         databaseURL: databaseURL
     });
 
@@ -51,16 +58,46 @@ function initializeFirebase() {
 }
 
 // ==================================================
+// PROVIDER HELPERS
+// ==================================================
+
+function normalizeProvider(value) {
+    const provider = String(
+        value || ""
+    ).trim().toLowerCase();
+
+    if (
+        provider === "365scores" ||
+        provider === "365"
+    ) {
+        return "365scores";
+    }
+
+    if (
+        provider === "apifootball" ||
+        provider === "api-football" ||
+        provider === "football"
+    ) {
+        return "apifootball";
+    }
+
+    return "";
+}
+
+// ==================================================
 // DATE HELPERS
 // ==================================================
 
 function getDateOffset(days) {
-    const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: TIME_ZONE,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit"
-    }).formatToParts(new Date());
+    const parts = new Intl.DateTimeFormat(
+        "en-GB",
+        {
+            timeZone: TIME_ZONE,
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit"
+        }
+    ).formatToParts(new Date());
 
     const values = {};
 
@@ -70,19 +107,25 @@ function getDateOffset(days) {
         }
     }
 
-    const date = new Date(Date.UTC(
-        Number(values.year),
-        Number(values.month) - 1,
-        Number(values.day) + days,
-        12,
-        0,
-        0
-    ));
+    const date = new Date(
+        Date.UTC(
+            Number(values.year),
+            Number(values.month) - 1,
+            Number(values.day) + days,
+            12,
+            0,
+            0
+        )
+    );
 
     return [
         date.getUTCFullYear(),
-        String(date.getUTCMonth() + 1).padStart(2, "0"),
-        String(date.getUTCDate()).padStart(2, "0")
+        String(
+            date.getUTCMonth() + 1
+        ).padStart(2, "0"),
+        String(
+            date.getUTCDate()
+        ).padStart(2, "0")
     ].join("-");
 }
 
@@ -97,12 +140,15 @@ function formatMatchDate(value) {
         return "";
     }
 
-    const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: TIME_ZONE,
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric"
-    }).formatToParts(date);
+    const parts = new Intl.DateTimeFormat(
+        "en-GB",
+        {
+            timeZone: TIME_ZONE,
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric"
+        }
+    ).formatToParts(date);
 
     const values = {};
 
@@ -128,12 +174,15 @@ function formatMatchTime(value) {
         return "";
     }
 
-    return new Intl.DateTimeFormat("en-US", {
-        timeZone: TIME_ZONE,
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: true
-    }).format(date);
+    return new Intl.DateTimeFormat(
+        "en-US",
+        {
+            timeZone: TIME_ZONE,
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: true
+        }
+    ).format(date);
 }
 
 // ==================================================
@@ -152,17 +201,20 @@ async function fetchFixtures(date) {
         date
     );
 
-    const response = await axios.get(DEFAULT_API_URL, {
-        params: {
-            date: date,
-            timezone: TIME_ZONE
-        },
-        headers: {
-            "x-apisports-key": API_KEY,
-            "Accept": "application/json"
-        },
-        timeout: REQUEST_TIMEOUT
-    });
+    const response = await axios.get(
+        DEFAULT_API_URL,
+        {
+            params: {
+                date: date,
+                timezone: TIME_ZONE
+            },
+            headers: {
+                "x-apisports-key": API_KEY,
+                "Accept": "application/json"
+            },
+            timeout: REQUEST_TIMEOUT
+        }
+    );
 
     const data = response.data;
 
@@ -172,7 +224,9 @@ async function fetchFixtures(date) {
         (
             Array.isArray(data.errors)
                 ? data.errors.length > 0
-                : Object.keys(data.errors).length > 0
+                : Object.keys(
+                    data.errors
+                ).length > 0
         )
     ) {
         throw new Error(
@@ -204,12 +258,14 @@ async function fetchFixtures(date) {
 
 function getMatchStatus(item) {
     const status =
-        item.fixture && item.fixture.status
+        item.fixture &&
+        item.fixture.status
             ? item.fixture.status
             : {};
 
-    const code = String(status.short || "NS")
-        .toUpperCase();
+    const code = String(
+        status.short || "NS"
+    ).toUpperCase();
 
     const elapsed =
         status.elapsed == null
@@ -242,19 +298,22 @@ function getMatchStatus(item) {
         };
     }
 
-    if ([
-        "1H",
-        "2H",
-        "3H",
-        "4H",
-        "5H",
-        "LIVE"
-    ].indexOf(code) !== -1) {
+    if (
+        [
+            "1H",
+            "2H",
+            "3H",
+            "4H",
+            "5H",
+            "LIVE"
+        ].indexOf(code) !== -1
+    ) {
         return {
             status: "Live",
-            shortStatus: elapsed == null
-                ? code
-                : String(elapsed) + "'",
+            shortStatus:
+                elapsed == null
+                    ? code
+                    : String(elapsed) + "'",
             elapsed: elapsed
         };
     }
@@ -293,10 +352,14 @@ function convertFixture(item, oldMatch) {
     const previous = oldMatch || {};
 
     const homeScore =
-        goals.home == null ? "" : goals.home;
+        goals.home == null
+            ? ""
+            : goals.home;
 
     const awayScore =
-        goals.away == null ? "" : goals.away;
+        goals.away == null
+            ? ""
+            : goals.away;
 
     const status = getMatchStatus(item);
 
@@ -323,73 +386,88 @@ function convertFixture(item, oldMatch) {
         }
     }
 
-    const match = Object.assign({}, preserved, {
-        gameId: fixtureId,
-        fixtureId: fixtureId,
-        apiFixtureId: fixtureId,
+    const match = Object.assign(
+        {},
+        preserved,
+        {
+            gameId: fixtureId,
+            fixtureId: fixtureId,
+            apiFixtureId: fixtureId,
 
-        apiProvider: "apifootball",
+            apiProvider: CURRENT_PROVIDER,
 
-        competitionId:
-            league.id == null
-                ? null
-                : Number(league.id),
+            competitionId:
+                league.id == null
+                    ? null
+                    : Number(league.id),
 
-        league:
-            league.name || "Unknown Competition",
+            league:
+                league.name ||
+                "Unknown Competition",
 
-        competition:
-            league.name || "Unknown Competition",
+            competition:
+                league.name ||
+                "Unknown Competition",
 
-        country: league.country || "",
-        season: league.season || null,
+            country: league.country || "",
+            season: league.season || null,
 
-        sportId: 1,
+            sportId: 1,
 
-        home: home.name || "Home",
-        away: away.name || "Away",
+            home: home.name || "Home",
+            away: away.name || "Away",
 
-        homeTeamId:
-            home.id == null
-                ? 0
-                : Number(home.id),
+            homeTeamId:
+                home.id == null
+                    ? 0
+                    : Number(home.id),
 
-        awayTeamId:
-            away.id == null
-                ? 0
-                : Number(away.id),
+            awayTeamId:
+                away.id == null
+                    ? 0
+                    : Number(away.id),
 
-        homeScore: homeScore,
-        awayScore: awayScore,
+            homeScore: homeScore,
+            awayScore: awayScore,
 
-        score:
-            homeScore !== "" &&
-            awayScore !== ""
-                ? homeScore + " - " + awayScore
-                : "VS",
+            score:
+                homeScore !== "" &&
+                awayScore !== ""
+                    ? homeScore + " - " + awayScore
+                    : "VS",
 
-        status: status.status,
-        shortStatus: status.shortStatus,
-        elapsed: status.elapsed,
+            status: status.status,
+            shortStatus: status.shortStatus,
+            elapsed: status.elapsed,
 
-        date: formatMatchDate(fixture.date),
-        time: formatMatchTime(fixture.date),
+            date: formatMatchDate(
+                fixture.date
+            ),
 
-        timestamp: Math.floor(timestamp / 1000),
-        matchTimeMillis: timestamp,
+            time: formatMatchTime(
+                fixture.date
+            ),
 
-        lastUpdated: Date.now()
-    });
+            timestamp: Math.floor(
+                timestamp / 1000
+            ),
 
-    // Use API stadium only when no admin value exists.
+            matchTimeMillis: timestamp,
+
+            lastUpdated: Date.now()
+        }
+    );
+
+    // API stadium only when no saved value exists.
     if (!match.stadium) {
         match.stadium =
-            fixture.venue && fixture.venue.name
+            fixture.venue &&
+            fixture.venue.name
                 ? fixture.venue.name
                 : "";
     }
 
-    // Use API logos only when there are no existing values.
+    // API logos only when no saved value exists.
     if (!match.homeLogo) {
         match.homeLogo = home.logo || "";
     }
@@ -413,13 +491,7 @@ function is365ScoresFootballMatch(match) {
         return false;
     }
 
-    /*
-     * Only consider football records.
-     *
-     * Do not delete basketball or records whose sport
-     * cannot be safely identified.
-     */
-
+    // Only football records may be deleted.
     const sportId = String(
         match.sportId == null
             ? ""
@@ -430,27 +502,25 @@ function is365ScoresFootballMatch(match) {
         return false;
     }
 
-    const provider = String(
-        match.apiProvider || ""
-    ).trim().toLowerCase();
+    const provider = normalizeProvider(
+        match.apiProvider
+    );
 
     // Explicit provider identification.
-    if (
-        provider === "365scores" ||
-        provider === "365"
-    ) {
+    if (provider === "365scores") {
         return true;
     }
 
-    /*
-     * Legacy records may not have apiProvider.
-     *
-     * Require BOTH a known 365Scores logo URL
-     * and both competitor IDs.
-     *
-     * Missing apiProvider alone is NOT enough.
-     */
+    // Do not delete API-Football records.
+    if (provider === "apifootball") {
+        return false;
+    }
 
+    /*
+     * Legacy 365Scores records may not have apiProvider.
+     * Require a known 365Scores logo URL and both
+     * competitor IDs before considering deletion.
+     */
     const homeLogo = String(
         match.homeLogo || ""
     ).toLowerCase();
@@ -460,21 +530,67 @@ function is365ScoresFootballMatch(match) {
     ).toLowerCase();
 
     const has365ScoresLogo =
-        homeLogo.includes(
+        homeLogo.indexOf(
             "imagecache.365scores.com"
-        ) ||
-        awayLogo.includes(
+        ) !== -1 ||
+        awayLogo.indexOf(
             "imagecache.365scores.com"
-        );
+        ) !== -1;
 
-    const has365ScoresCompetitors =
+    const hasCompetitorIds =
         match.homeCompetitorId != null &&
         match.awayCompetitorId != null;
 
     return (
         has365ScoresLogo &&
-        has365ScoresCompetitors
+        hasCompetitorIds
     );
+}
+
+// ==================================================
+// INFER PREVIOUS PROVIDER
+// ==================================================
+
+function inferPreviousProvider(existingMatches) {
+    const providers = new Set();
+
+    for (
+        const matchId of Object.keys(
+            existingMatches || {}
+        )
+    ) {
+        const match = existingMatches[matchId];
+
+        if (!match || typeof match !== "object") {
+            continue;
+        }
+
+        // Only inspect football matches.
+        if (String(match.sportId) !== "1") {
+            continue;
+        }
+
+        const provider = normalizeProvider(
+            match.apiProvider
+        );
+
+        if (provider) {
+            providers.add(provider);
+            continue;
+        }
+
+        // Infer legacy 365Scores records safely.
+        if (is365ScoresFootballMatch(match)) {
+            providers.add("365scores");
+        }
+    }
+
+    if (providers.size === 1) {
+        return Array.from(providers)[0];
+    }
+
+    // Empty or mixed data: cannot safely infer.
+    return "";
 }
 
 // ==================================================
@@ -542,10 +658,9 @@ async function main() {
     const settings =
         settingsSnapshot.val() || {};
 
-    const selectedParser =
-        String(
-            settings.selected_parser || "parse1"
-        );
+    const selectedParser = String(
+        settings.selected_parser || "parse1"
+    );
 
     const parserConfig =
         settings.parse &&
@@ -553,10 +668,9 @@ async function main() {
             ? settings.parse[selectedParser]
             : {};
 
-    const apiParser =
-        String(
-            parserConfig.api_parser || ""
-        ).trim().toLowerCase();
+    const apiParser = String(
+        parserConfig.api_parser || ""
+    ).trim().toLowerCase();
 
     if (
         apiParser &&
@@ -579,7 +693,7 @@ async function main() {
 
     console.log(
         "API provider:",
-        apiParser || "apifootball"
+        CURRENT_PROVIDER
     );
 
     // ----------------------------------------------
@@ -589,7 +703,8 @@ async function main() {
     const results = await Promise.all([
         db.ref("competition_selection").once("value"),
         db.ref("competitions").once("value"),
-        db.ref("matches").once("value")
+        db.ref("matches").once("value"),
+        db.ref(PROVIDER_STATE_PATH).once("value")
     ]);
 
     const competitionSelection =
@@ -600,6 +715,35 @@ async function main() {
 
     const existingMatches =
         results[2].val() || {};
+
+    let previousProvider = normalizeProvider(
+        results[3].val()
+    );
+
+    if (!previousProvider) {
+        previousProvider = inferPreviousProvider(
+            existingMatches
+        );
+
+        console.log(
+            "Provider marker missing; inferred provider:",
+            previousProvider || "unknown"
+        );
+    } else {
+        console.log(
+            "Previous provider:",
+            previousProvider
+        );
+    }
+
+    const providerSwitchDetected =
+        previousProvider !== "" &&
+        previousProvider !== CURRENT_PROVIDER;
+
+    console.log(
+        "Provider switch detected:",
+        providerSwitchDetected
+    );
 
     // ----------------------------------------------
     // Fetch yesterday, today and tomorrow
@@ -689,8 +833,9 @@ async function main() {
     for (const item of discoveredFixtures) {
         const league = item.league || {};
 
-        const competitionId =
-            Number(league.id);
+        const competitionId = Number(
+            league.id
+        );
 
         if (
             !Number.isInteger(competitionId) ||
@@ -713,15 +858,14 @@ async function main() {
                 competitionKey
             );
 
-        const selected =
-            isCompetitionSelected(
-                hasSelection
-                    ? competitionSelection[
-                        competitionKey
-                    ]
-                    : undefined,
-                oldCompetition
-            );
+        const selected = isCompetitionSelected(
+            hasSelection
+                ? competitionSelection[
+                    competitionKey
+                ]
+                : undefined,
+            oldCompetition
+        );
 
         const competitionName =
             league.name ||
@@ -763,8 +907,7 @@ async function main() {
             continue;
         }
 
-        const fixtureKey =
-            String(fixtureId);
+        const fixtureKey = String(fixtureId);
 
         if (seenFixtures.has(fixtureKey)) {
             continue;
@@ -775,11 +918,10 @@ async function main() {
         const oldMatch =
             existingMatches[fixtureKey] || {};
 
-        const match =
-            convertFixture(
-                item,
-                oldMatch
-            );
+        const match = convertFixture(
+            item,
+            oldMatch
+        );
 
         if (!match) {
             continue;
@@ -827,29 +969,29 @@ async function main() {
     }
 
     // ----------------------------------------------
-    // SAFE OLD 365SCORES CLEANUP
+    // SAFE PROVIDER SWITCH CLEANUP
     // ----------------------------------------------
 
     let removed365ScoresCount = 0;
 
-    /*
-     * Do not delete legacy records if:
-     *
-     * 1. Any date request failed.
-     * 2. The API returned no fixtures.
-     * 3. No selected API-Football match was synced.
-     *
-     * This reduces the chance of deleting old data
-     * when API access or configuration is broken.
-     */
-
-    const canCleanup365Scores =
+    const allRequestsSucceeded =
         successfulRequests === 3 &&
-        failedRequests === 0 &&
+        failedRequests === 0;
+
+    const safeToCleanup =
+        allRequestsSucceeded &&
         discoveredFixtures.length > 0 &&
         selectedMatchCount > 0;
 
-    if (canCleanup365Scores) {
+    if (
+        safeToCleanup &&
+        providerSwitchDetected &&
+        previousProvider === "365scores"
+    ) {
+        console.log(
+            "Provider changed from 365Scores to API-Football."
+        );
+
         console.log(
             "Checking old 365Scores football matches..."
         );
@@ -870,11 +1012,7 @@ async function main() {
                 continue;
             }
 
-            /*
-             * Never delete a match that is being
-             * refreshed by API-Football in this run.
-             */
-
+            // Keep records refreshed in this run.
             if (
                 Object.prototype.hasOwnProperty.call(
                     matchUpdates,
@@ -904,16 +1042,47 @@ async function main() {
             );
         }
 
-    } else {
+    } else if (!providerSwitchDetected) {
         console.log(
-            "365Scores cleanup skipped for safety."
+            "No confirmed provider switch. " +
+            "Existing matches will not be cleaned up."
+        );
+
+    } else if (!safeToCleanup) {
+        console.log(
+            "Provider cleanup skipped for safety."
         );
 
         console.log(
-            "Cleanup requires all 3 requests to succeed, " +
-            "fixtures to be received, and selected matches " +
-            "to be synced."
+            "All 3 requests must succeed, fixtures " +
+            "must be received, and selected matches " +
+            "must be synced."
         );
+
+    } else {
+        console.log(
+            "Previous provider is not 365Scores. " +
+            "No 365Scores cleanup is needed."
+        );
+    }
+
+    // ----------------------------------------------
+    // Save provider marker
+    // ----------------------------------------------
+
+    /*
+     * Update the marker only after a successful complete
+     * sync with selected matches.
+     *
+     * This makes provider switching detectable on the
+     * next run without marking a partial sync as complete.
+     */
+
+    if (
+        safeToCleanup
+    ) {
+        updates[PROVIDER_STATE_PATH] =
+            CURRENT_PROVIDER;
     }
 
     // ----------------------------------------------
@@ -965,8 +1134,20 @@ async function main() {
     );
 
     console.log(
+        "Provider switch detected:",
+        providerSwitchDetected
+    );
+
+    console.log(
         "Old 365Scores football matches removed:",
         removed365ScoresCount
+    );
+
+    console.log(
+        "Provider marker:",
+        safeToCleanup
+            ? CURRENT_PROVIDER
+            : "unchanged"
     );
 
     console.log("==================================");
