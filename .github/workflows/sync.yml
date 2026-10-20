@@ -20,14 +20,23 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      # --------------------------------------------------
+      # 1. Checkout repository
+      # --------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # --------------------------------------------------
+      # 2. Setup Node.js
+      # --------------------------------------------------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
+      # --------------------------------------------------
+      # 3. Install dependencies
+      # --------------------------------------------------
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
@@ -36,6 +45,9 @@ jobs:
             npm install
           fi
 
+      # --------------------------------------------------
+      # 4. Check Firebase Auto Sync settings
+      # --------------------------------------------------
       - name: Check Automatic Sync and Interval
         id: autosync
         env:
@@ -48,9 +60,16 @@ jobs:
           const fs = require("fs");
 
           async function main() {
+            let shouldSync = false;
+            let reason = "";
+            let interval = 15;
+            let enabled = false;
+
             try {
-              if (!process.env.FIREBASE_SERVICE_ACCOUNT ||
-                  !process.env.FIREBASE_DATABASE_URL) {
+              if (
+                !process.env.FIREBASE_SERVICE_ACCOUNT ||
+                !process.env.FIREBASE_DATABASE_URL
+              ) {
                 throw new Error("Firebase secrets are missing.");
               }
 
@@ -64,25 +83,32 @@ jobs:
               });
 
               const db = admin.database();
-              const snapshot = await db.ref("syncSettings").once("value");
+
+              const snapshot = await db
+                .ref("syncSettings")
+                .once("value");
+
               const settings = snapshot.val() || {};
 
-              const enabled = settings.autoSyncEnabled === true;
+              enabled = settings.autoSyncEnabled === true;
 
-              let interval = Number(settings.syncIntervalMinutes || 15);
+              interval = Number(
+                settings.syncIntervalMinutes || 15
+              );
 
-              if (![5, 10, 15].includes(interval)) {
-                console.log("Invalid interval; using 15 minutes.");
+              if (![5, 15, 30, 60].includes(interval)) {
+                console.log(
+                  "Invalid interval. Using default 15 minutes."
+                );
                 interval = 15;
               }
 
-              let shouldSync = false;
-              let reason = "";
+              const eventName = process.env.EVENT_NAME;
 
-              if (process.env.EVENT_NAME === "workflow_dispatch") {
+              if (eventName === "workflow_dispatch") {
                 shouldSync = true;
                 reason = "Manual sync requested.";
-              } else if (process.env.EVENT_NAME === "schedule") {
+              } else if (eventName === "schedule") {
                 if (!enabled) {
                   reason = "Automatic Sync is OFF.";
                 } else {
@@ -90,39 +116,53 @@ jobs:
                     settings.lastSuccessfulSync || 0
                   );
 
-                  const elapsed = Date.now() - lastSync;
+                  const now = Date.now();
                   const intervalMs = interval * 60 * 1000;
+                  const elapsed = now - lastSync;
 
                   if (lastSync <= 0 || elapsed >= intervalMs) {
                     shouldSync = true;
                     reason = "Selected interval has elapsed.";
                   } else {
-                    const remaining = Math.ceil(
-                      (intervalMs - elapsed) / 60000
+                    const remainingMs = intervalMs - elapsed;
+                    const remainingSeconds = Math.ceil(
+                      remainingMs / 1000
                     );
-                    reason = "Waiting approximately " +
-                      remaining + " more minute(s).";
+
+                    const minutes = Math.floor(
+                      remainingSeconds / 60
+                    );
+
+                    const seconds = remainingSeconds % 60;
+
+                    reason =
+                      "Waiting approximately " +
+                      minutes +
+                      " minute(s) and " +
+                      seconds +
+                      " second(s).";
                   }
                 }
+              } else {
+                reason = "Unsupported workflow event.";
               }
 
               console.log("Automatic Sync:", enabled);
-              console.log("Interval:", interval);
+              console.log("Selected interval:", interval);
               console.log("Event:", process.env.EVENT_NAME);
               console.log("Should sync:", shouldSync);
               console.log("Reason:", reason);
 
+              const output = [
+                "should_sync=" + shouldSync,
+                "interval=" + interval,
+                "auto_sync_enabled=" + enabled,
+                "reason=" + reason.replace(/[\r\n]/g, " ")
+              ].join("\n") + "\n";
+
               fs.appendFileSync(
                 process.env.GITHUB_OUTPUT,
-                "should_sync=" + shouldSync + "\n"
-              );
-              fs.appendFileSync(
-                process.env.GITHUB_OUTPUT,
-                "interval=" + interval + "\n"
-              );
-              fs.appendFileSync(
-                process.env.GITHUB_OUTPUT,
-                "reason=" + reason.replace(/[\r\n]/g, " ") + "\n"
+                output
               );
             } finally {
               if (admin.apps.length) {
@@ -132,11 +172,17 @@ jobs:
           }
 
           main().catch(error => {
-            console.error("Automatic sync check failed:", error.message);
+            console.error(
+              "Automatic sync check failed:",
+              error.message
+            );
             process.exit(1);
           });
           NODE
 
+      # --------------------------------------------------
+      # 5. Select API provider from Firebase
+      # --------------------------------------------------
       - name: Select API from Firebase
         id: parser
         if: steps.autosync.outputs.should_sync == 'true'
@@ -150,6 +196,13 @@ jobs:
 
           async function main() {
             try {
+              if (
+                !process.env.FIREBASE_SERVICE_ACCOUNT ||
+                !process.env.FIREBASE_DATABASE_URL
+              ) {
+                throw new Error("Firebase secrets are missing.");
+              }
+
               const serviceAccount = JSON.parse(
                 process.env.FIREBASE_SERVICE_ACCOUNT
               );
@@ -164,8 +217,12 @@ jobs:
                 .once("value");
 
               const settings = snapshot.val() || {};
-              const parserKey = settings.selected_parser || "parse1";
-              const parser = settings.parse &&
+
+              const parserKey =
+                settings.selected_parser || "parse1";
+
+              const parser =
+                settings.parse &&
                 settings.parse[parserKey];
 
               if (!parser) {
@@ -174,13 +231,16 @@ jobs:
                 );
               }
 
-              const apiParser = String(parser.api_parser || "")
-                .trim()
-                .toLowerCase();
+              const apiParser = String(
+                parser.api_parser || ""
+              ).trim().toLowerCase();
 
               let provider;
 
-              if (apiParser === "365" || apiParser === "365scores") {
+              if (
+                apiParser === "365" ||
+                apiParser === "365scores"
+              ) {
                 provider = "365scores";
               } else if (
                 apiParser === "apifootball" ||
@@ -208,11 +268,17 @@ jobs:
           }
 
           main().catch(error => {
-            console.error("API selection failed:", error.message);
+            console.error(
+              "API selection failed:",
+              error.message
+            );
             process.exit(1);
           });
           NODE
 
+      # --------------------------------------------------
+      # 6. Run API-Football
+      # --------------------------------------------------
       - name: Run API-Football
         if: >-
           steps.autosync.outputs.should_sync == 'true' &&
@@ -223,6 +289,9 @@ jobs:
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
         run: node apis/api-football.js
 
+      # --------------------------------------------------
+      # 7. Run 365Scores
+      # --------------------------------------------------
       - name: Run 365Scores
         if: >-
           steps.autosync.outputs.should_sync == 'true' &&
@@ -232,12 +301,17 @@ jobs:
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
         run: node apis/365scores.js
 
+      # --------------------------------------------------
+      # 8. Save successful sync timestamp
+      # --------------------------------------------------
       - name: Save Successful Sync Time
         if: >-
           success() &&
           steps.autosync.outputs.should_sync == 'true' &&
-          (steps.parser.outputs.provider == '365scores' ||
-           steps.parser.outputs.provider == 'apifootball')
+          (
+            steps.parser.outputs.provider == '365scores' ||
+            steps.parser.outputs.provider == 'apifootball'
+          )
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
@@ -247,6 +321,13 @@ jobs:
 
           async function main() {
             try {
+              if (
+                !process.env.FIREBASE_SERVICE_ACCOUNT ||
+                !process.env.FIREBASE_DATABASE_URL
+              ) {
+                throw new Error("Firebase secrets are missing.");
+              }
+
               const serviceAccount = JSON.parse(
                 process.env.FIREBASE_SERVICE_ACCOUNT
               );
@@ -256,11 +337,18 @@ jobs:
                 databaseURL: process.env.FIREBASE_DATABASE_URL
               });
 
-              await admin.database().ref("syncSettings").update({
-                lastSuccessfulSync: Date.now()
-              });
+              const now = Date.now();
 
-              console.log("Successful sync timestamp saved.");
+              await admin.database()
+                .ref("syncSettings")
+                .update({
+                  lastSuccessfulSync: now
+                });
+
+              console.log(
+                "Successful sync timestamp saved:",
+                now
+              );
             } finally {
               if (admin.apps.length) {
                 await admin.app().delete();
@@ -269,16 +357,23 @@ jobs:
           }
 
           main().catch(error => {
-            console.error("Failed to save sync timestamp:", error.message);
+            console.error(
+              "Failed to save sync timestamp:",
+              error.message
+            );
             process.exit(1);
           });
           NODE
 
+      # --------------------------------------------------
+      # 9. Workflow summary
+      # --------------------------------------------------
       - name: Workflow Summary
         if: always()
         env:
           SHOULD_SYNC: ${{ steps.autosync.outputs.should_sync }}
           SELECTED_INTERVAL: ${{ steps.autosync.outputs.interval }}
+          AUTO_SYNC_ENABLED: ${{ steps.autosync.outputs.auto_sync_enabled }}
           SYNC_REASON: ${{ steps.autosync.outputs.reason }}
           SELECTED_PROVIDER: ${{ steps.parser.outputs.provider }}
         run: |
@@ -287,6 +382,7 @@ jobs:
             echo ""
             echo "- Event: $GITHUB_EVENT_NAME"
             echo "- Branch: $GITHUB_REF_NAME"
+            echo "- Automatic Sync: ${AUTO_SYNC_ENABLED:-unknown}"
             echo "- Should sync: ${SHOULD_SYNC:-unknown}"
             echo "- Selected interval: ${SELECTED_INTERVAL:-unknown} minutes"
             echo "- Provider: ${SELECTED_PROVIDER:-not selected}"
