@@ -19,7 +19,6 @@ const DATABASE_URL = process.env.FIREBASE_DATABASE_URL;
 const SERVICE_ACCOUNT_JSON =
     process.env.FIREBASE_SERVICE_ACCOUNT;
 
-// Firebase paths
 const SETTINGS_PATH = "settings";
 const COMPETITIONS_PATH = "competitions";
 const SELECTION_PATH = "competition_selection";
@@ -50,7 +49,9 @@ function initializeFirebase() {
     let serviceAccount;
 
     try {
-        serviceAccount = JSON.parse(SERVICE_ACCOUNT_JSON);
+        serviceAccount = JSON.parse(
+            SERVICE_ACCOUNT_JSON
+        );
     } catch (error) {
         throw new Error(
             "FIREBASE_SERVICE_ACCOUNT is not valid JSON."
@@ -58,16 +59,18 @@ function initializeFirebase() {
     }
 
     admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
+        credential: admin.credential.cert(
+            serviceAccount
+        ),
         databaseURL: DATABASE_URL
     });
 }
 
-const sleep = function (milliseconds) {
+function sleep(milliseconds) {
     return new Promise(function (resolve) {
         setTimeout(resolve, milliseconds);
     });
-};
+}
 
 // ============================================
 // GENERAL HELPERS
@@ -85,67 +88,31 @@ function asObject(value) {
     return {};
 }
 
-function toNumber(value, fallback) {
-    const number = Number(value);
-
-    if (Number.isFinite(number)) {
-        return number;
-    }
-
-    return fallback;
-}
-
 function cleanText(value, fallback) {
-    if (value === undefined || value === null) {
+    if (
+        value === undefined ||
+        value === null
+    ) {
         return fallback || "";
     }
 
     return String(value);
 }
 
-function getDateOffset(offset) {
-    const date = new Date();
-
-    date.setUTCDate(date.getUTCDate() + offset);
-
-    const year = date.getUTCFullYear();
-    const month = String(
-        date.getUTCMonth() + 1
-    ).padStart(2, "0");
-
-    const day = String(
-        date.getUTCDate()
-    ).padStart(2, "0");
-
-    return year + "-" + month + "-" + day;
-}
-
-function getTimestamp(fixture) {
-    const timestamp = toNumber(
-        fixture &&
-        fixture.fixture &&
-        fixture.fixture.timestamp,
-        0
-    );
-
-    if (timestamp > 0) {
-        return timestamp * 1000;
+function toNumber(value, fallback) {
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+        return fallback;
     }
 
-    const dateText =
-        fixture &&
-        fixture.fixture &&
-        fixture.fixture.date;
+    const number = Number(value);
 
-    if (dateText) {
-        const parsed = Date.parse(dateText);
-
-        if (Number.isFinite(parsed)) {
-            return parsed;
-        }
-    }
-
-    return 0;
+    return Number.isFinite(number)
+        ? number
+        : fallback;
 }
 
 function normalizeId(value) {
@@ -160,9 +127,17 @@ function normalizeId(value) {
     return String(value);
 }
 
-// ============================================
-// PROVIDER HELPERS
-// ============================================
+function getDateOffset(offset) {
+    const date = new Date();
+
+    date.setUTCDate(
+        date.getUTCDate() + offset
+    );
+
+    return date.getUTCFullYear() + "-" +
+        String(date.getUTCMonth() + 1).padStart(2, "0") + "-" +
+        String(date.getUTCDate()).padStart(2, "0");
+}
 
 function normalizeProvider(value) {
     const provider = cleanText(value, "")
@@ -170,10 +145,10 @@ function normalizeProvider(value) {
         .trim();
 
     if (
-        provider === "apifootball" ||
         provider === "api-football" ||
         provider === "api_football" ||
-        provider === "api football"
+        provider === "api football" ||
+        provider === "apifootball"
     ) {
         return "apifootball";
     }
@@ -189,75 +164,80 @@ function normalizeProvider(value) {
     return provider;
 }
 
+// ============================================
+// CHECK SELECTED PARSER
+// ============================================
+
 function isApiFootballSelected(settings) {
     const root = asObject(settings);
+
     const selectedParser = cleanText(
         root.selected_parser,
         "parse1"
     );
 
-    const parseSettings = asObject(root.parse);
+    const parseSettings = asObject(
+        root.parse
+    );
+
     const parser = asObject(
         parseSettings[selectedParser]
     );
 
-    const apiParser = normalizeProvider(
+    const provider = normalizeProvider(
         parser.api_parser
     );
 
-    return (
-        apiParser === "apifootball" ||
-        apiParser === "api-football" ||
-        apiParser === "api_football"
+    console.log(
+        "Selected parser: " + selectedParser
     );
+
+    console.log(
+        "Selected API provider: " +
+        (provider || "not configured")
+    );
+
+    return provider === "apifootball";
 }
 
 // ============================================
 // COMPETITION SELECTION
 // ============================================
 
-function isCompetitionSelected(selectionValue) {
-    // A missing selection is treated as not selected.
-    // This controls display selection, NOT saving matches.
-
+function isCompetitionSelected(value) {
     if (
-        selectionValue === true ||
-        selectionValue === "true" ||
-        selectionValue === 1 ||
-        selectionValue === "1"
+        value === true ||
+        value === 1 ||
+        value === "1" ||
+        value === "true"
     ) {
         return true;
     }
 
     if (
-        selectionValue === false ||
-        selectionValue === "false" ||
-        selectionValue === 0 ||
-        selectionValue === "0" ||
-        selectionValue === null ||
-        selectionValue === undefined
+        value === false ||
+        value === 0 ||
+        value === "0" ||
+        value === "false" ||
+        value === null ||
+        value === undefined
     ) {
         return false;
     }
 
-    if (typeof selectionValue === "object") {
-        const value = asObject(selectionValue);
+    // Also support legacy object format.
+    if (typeof value === "object") {
+        const object = asObject(value);
 
-        if (value.selected !== undefined) {
-            return (
-                value.selected === true ||
-                value.selected === "true" ||
-                value.selected === 1 ||
-                value.selected === "1"
+        if (object.selected !== undefined) {
+            return isCompetitionSelected(
+                object.selected
             );
         }
 
-        if (value.enabled !== undefined) {
-            return (
-                value.enabled === true ||
-                value.enabled === "true" ||
-                value.enabled === 1 ||
-                value.enabled === "1"
+        if (object.enabled !== undefined) {
+            return isCompetitionSelected(
+                object.enabled
             );
         }
     }
@@ -265,14 +245,8 @@ function isCompetitionSelected(selectionValue) {
     return false;
 }
 
-function getSelectionValue(selectionData, competitionId) {
-    const selections = asObject(selectionData);
-
-    return selections[competitionId];
-}
-
 // ============================================
-// STATUS HELPERS
+// API FOOTBALL STATUS
 // ============================================
 
 function getShortStatus(fixture) {
@@ -286,16 +260,13 @@ function getShortStatus(fixture) {
 }
 
 function getElapsed(fixture) {
-    const elapsed = fixture &&
+    const value =
+        fixture &&
         fixture.fixture &&
         fixture.fixture.status &&
         fixture.fixture.status.elapsed;
 
-    if (elapsed === null || elapsed === undefined) {
-        return 0;
-    }
-
-    return toNumber(elapsed, 0);
+    return toNumber(value, 0);
 }
 
 function getStatusText(fixture) {
@@ -310,36 +281,26 @@ function getStatusText(fixture) {
             return "UPCOMING";
 
         case "1H":
-            return elapsed > 0
-                ? elapsed + "'"
-                : "1H";
-
-        case "HT":
-            return "HT";
-
         case "2H":
-            return elapsed > 0
-                ? elapsed + "'"
-                : "2H";
-
         case "ET":
             return elapsed > 0
                 ? elapsed + "'"
-                : "ET";
+                : shortStatus;
+
+        case "HT":
+            return "HT";
 
         case "BT":
             return "BT";
 
         case "P":
+        case "PEN":
             return "PEN";
 
         case "LIVE":
             return elapsed > 0
                 ? elapsed + "'"
                 : "LIVE";
-
-        case "SUSP":
-            return "SUSP";
 
         case "INT":
             return "INT";
@@ -349,9 +310,6 @@ function getStatusText(fixture) {
 
         case "AET":
             return "AET";
-
-        case "PEN":
-            return "PEN";
 
         case "PST":
             return "PST";
@@ -368,23 +326,15 @@ function getStatusText(fixture) {
         case "WO":
             return "WO";
 
+        case "SUSP":
+            return "SUSP";
+
         case "1P":
-            return "1P";
-
         case "2P":
-            return "2P";
-
         case "3P":
-            return "3P";
-
         case "4P":
-            return "4P";
-
         case "OT":
-            return "OT";
-
-        case "AP":
-            return "AP";
+            return shortStatus;
 
         default:
             return shortStatus;
@@ -392,7 +342,7 @@ function getStatusText(fixture) {
 }
 
 function getMatchStatus(fixture) {
-    const shortStatus = getShortStatus(fixture);
+    const status = getShortStatus(fixture);
 
     const liveStatuses = [
         "1H",
@@ -416,42 +366,111 @@ function getMatchStatus(fixture) {
         "PEN"
     ];
 
-    const cancelledStatuses = [
-        "CANC",
-        "ABD",
-        "AWD",
-        "WO"
+    const upcomingStatuses = [
+        "NS",
+        "TBD"
     ];
 
-    const postponedStatuses = [
-        "PST",
-        "SUSP"
-    ];
-
-    if (liveStatuses.indexOf(shortStatus) !== -1) {
+    if (liveStatuses.indexOf(status) !== -1) {
         return "LIVE";
     }
 
-    if (finishedStatuses.indexOf(shortStatus) !== -1) {
+    if (finishedStatuses.indexOf(status) !== -1) {
         return "FT";
     }
 
-    if (cancelledStatuses.indexOf(shortStatus) !== -1) {
-        return shortStatus;
-    }
-
-    if (postponedStatuses.indexOf(shortStatus) !== -1) {
-        return shortStatus;
-    }
-
-    if (
-        shortStatus === "NS" ||
-        shortStatus === "TBD"
-    ) {
+    if (upcomingStatuses.indexOf(status) !== -1) {
         return "UPCOMING";
     }
 
-    return shortStatus;
+    return status;
+}
+
+// ============================================
+// TIMESTAMP AND DATE
+// ============================================
+
+function getTimestamp(fixture) {
+    const fixtureInfo = asObject(
+        fixture && fixture.fixture
+    );
+
+    const timestamp = toNumber(
+        fixtureInfo.timestamp,
+        0
+    );
+
+    if (timestamp > 0) {
+        return timestamp * 1000;
+    }
+
+    const dateText = fixtureInfo.date;
+
+    if (dateText) {
+        const parsed = Date.parse(dateText);
+
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+
+    return 0;
+}
+
+function formatDate(timestamp, fixture) {
+    if (!timestamp) {
+        const fixtureDate =
+            fixture &&
+            fixture.fixture &&
+            fixture.fixture.date;
+
+        return fixtureDate
+            ? fixtureDate.substring(0, 10)
+            : "";
+    }
+
+    const parts = new Intl.DateTimeFormat(
+        "en-GB",
+        {
+            timeZone: TIME_ZONE,
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric"
+        }
+    ).formatToParts(new Date(timestamp));
+
+    const values = {};
+
+    parts.forEach(function (part) {
+        values[part.type] = part.value;
+    });
+
+    return values.day + "-" +
+        values.month + "-" +
+        values.year;
+}
+
+function formatTime(timestamp, fixture) {
+    if (!timestamp) {
+        const fixtureDate =
+            fixture &&
+            fixture.fixture &&
+            fixture.fixture.date;
+
+        return fixtureDate
+            ? fixtureDate.substring(11, 16)
+            : "";
+    }
+
+    return new Intl.DateTimeFormat(
+        "en-US",
+        {
+            timeZone: TIME_ZONE,
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: true
+        }
+    ).format(new Date(timestamp));
 }
 
 // ============================================
@@ -493,7 +512,7 @@ async function fetchFixtures(params, label) {
             Object.keys(errors).length > 0
         ) {
             throw new Error(
-                label + ": API error: " +
+                label + ": " +
                 JSON.stringify(errors)
             );
         }
@@ -501,25 +520,24 @@ async function fetchFixtures(params, label) {
 
     if (!Array.isArray(data.response)) {
         throw new Error(
-            label + ": API response is not an array."
+            label + ": Invalid API response."
         );
     }
 
     console.log(
-        label + ": received " +
+        label + ": " +
         data.response.length +
-        " fixtures."
+        " fixtures received."
     );
 
     return data.response;
 }
 
 // ============================================
-// FETCH ALL AVAILABLE FIXTURES
+// FETCH FIXTURES
 // ============================================
 
 async function fetchAllFixtures() {
-    const allFixtures = [];
     const fixtureMap = {};
 
     let successfulRequests = 0;
@@ -535,32 +553,26 @@ async function fetchAllFixtures() {
             successfulRequests++;
 
             fixtures.forEach(function (fixture) {
-                const fixtureId = normalizeId(
+                const id = normalizeId(
                     fixture &&
                     fixture.fixture &&
                     fixture.fixture.id
                 );
 
-                if (!fixtureId) {
-                    return;
-                }
-
-                // Remove duplicates from live/date requests.
-                if (!fixtureMap[fixtureId]) {
-                    fixtureMap[fixtureId] = true;
-                    allFixtures.push(fixture);
+                if (id) {
+                    fixtureMap[id] = fixture;
                 }
             });
         } catch (error) {
             failedRequests++;
 
             console.error(
-                label + " failed: " + error.message
+                label + " failed: " +
+                error.message
             );
         }
     }
 
-    // Fetch yesterday, today and tomorrow.
     const offsets = [-1, 0, 1];
 
     for (let i = 0; i < offsets.length; i++) {
@@ -570,44 +582,50 @@ async function fetchAllFixtures() {
             {
                 date: date
             },
-            "Fixtures for " + date
+            "Fixtures " + date
         );
 
         await sleep(REQUEST_DELAY);
     }
 
-    // Fetch currently live matches separately.
-    // Duplicate fixture IDs are automatically ignored.
     await collect(
         {
             live: "all"
         },
-        "All live fixtures"
+        "Live fixtures"
     );
+
+    const fixtures = Object.keys(
+        fixtureMap
+    ).map(function (id) {
+        return fixtureMap[id];
+    });
 
     console.log("");
     console.log("API FETCH SUMMARY");
     console.log("-----------------");
     console.log(
-        "Successful requests: " + successfulRequests
+        "Successful requests: " +
+        successfulRequests
     );
     console.log(
-        "Failed requests: " + failedRequests
+        "Failed requests: " +
+        failedRequests
     );
     console.log(
-        "Unique fixtures collected: " + allFixtures.length
+        "Unique fixtures: " +
+        fixtures.length
     );
 
-    // If every request failed, do not write or delete data.
     if (successfulRequests === 0) {
         throw new Error(
             "All API requests failed. " +
-            "Firebase matches were not changed."
+            "Firebase data was not changed."
         );
     }
 
     return {
-        fixtures: allFixtures,
+        fixtures: fixtures,
         successfulRequests: successfulRequests,
         failedRequests: failedRequests
     };
@@ -622,10 +640,17 @@ function convertCompetition(
     existingCompetition,
     selected
 ) {
-    const league = asObject(fixture.league);
-    const existing = asObject(existingCompetition);
+    const existing = asObject(
+        existingCompetition
+    );
 
-    const competitionId = normalizeId(league.id);
+    const league = asObject(
+        fixture.league
+    );
+
+    const competitionId = normalizeId(
+        league.id
+    );
 
     return Object.assign(
         {},
@@ -633,15 +658,38 @@ function convertCompetition(
         {
             id: competitionId,
             competitionId: competitionId,
-            name: cleanText(league.name, "Unknown League"),
-            league: cleanText(league.name, "Unknown League"),
-            country: cleanText(league.country, ""),
-            logo: cleanText(league.logo, ""),
-            flag: cleanText(league.flag, ""),
-            season: toNumber(league.season, 0),
-            sportId: 1,
 
-            // Preserve the user's current selection.
+            name: cleanText(
+                league.name,
+                "Unknown League"
+            ),
+
+            league: cleanText(
+                league.name,
+                "Unknown League"
+            ),
+
+            country: cleanText(
+                league.country,
+                ""
+            ),
+
+            logo: cleanText(
+                league.logo,
+                ""
+            ),
+
+            flag: cleanText(
+                league.flag,
+                ""
+            ),
+
+            season: toNumber(
+                league.season,
+                0
+            ),
+
+            sportId: 1,
             selected: selected,
 
             apiProvider: "apifootball",
@@ -659,76 +707,117 @@ function convertFixture(
     existingMatch,
     competitionSelected
 ) {
-    const existing = asObject(existingMatch);
-
-    const fixtureInfo = asObject(fixture.fixture);
-    const league = asObject(fixture.league);
-    const teams = asObject(fixture.teams);
-    const goals = asObject(fixture.goals);
-    const score = asObject(fixture.score);
-
-    const home = asObject(teams.home);
-    const away = asObject(teams.away);
-
-    const venue = asObject(fixtureInfo.venue);
-
-    const fixtureId = normalizeId(fixtureInfo.id);
-    const competitionId = normalizeId(league.id);
-
-    const timestamp = getTimestamp(fixture);
-
-    const homeScore =
-        goals.home === null || goals.home === undefined
-            ? 0
-            : toNumber(goals.home, 0);
-
-    const awayScore =
-        goals.away === null || goals.away === undefined
-            ? 0
-            : toNumber(goals.away, 0);
-
-    const shortStatus = getShortStatus(fixture);
-    const statusText = getStatusText(fixture);
-    const matchStatus = getMatchStatus(fixture);
-
-    const fixtureDate = cleanText(
-        fixtureInfo.date,
-        ""
+    const existing = asObject(
+        existingMatch
     );
 
-    const formattedDate = fixtureDate
-        ? fixtureDate.substring(0, 10)
-        : "";
+    const fixtureInfo = asObject(
+        fixture.fixture
+    );
 
-    const formattedTime = fixtureDate
-        ? fixtureDate.substring(11, 16)
-        : "";
+    const league = asObject(
+        fixture.league
+    );
 
-    const homeTeam = cleanText(
+    const teams = asObject(
+        fixture.teams
+    );
+
+    const goals = asObject(
+        fixture.goals
+    );
+
+    const home = asObject(
+        teams.home
+    );
+
+    const away = asObject(
+        teams.away
+    );
+
+    const venue = asObject(
+        fixtureInfo.venue
+    );
+
+    const fixtureId = normalizeId(
+        fixtureInfo.id
+    );
+
+    const competitionId = normalizeId(
+        league.id
+    );
+
+    const timestamp = getTimestamp(
+        fixture
+    );
+
+    // Do not convert missing scores into 0.
+    const hasHomeScore =
+        goals.home !== null &&
+        goals.home !== undefined;
+
+    const hasAwayScore =
+        goals.away !== null &&
+        goals.away !== undefined;
+
+    const homeScore = hasHomeScore
+        ? toNumber(goals.home, null)
+        : existing.homeScore !== undefined
+            ? existing.homeScore
+            : null;
+
+    const awayScore = hasAwayScore
+        ? toNumber(goals.away, null)
+        : existing.awayScore !== undefined
+            ? existing.awayScore
+            : null;
+
+    let scoreText = existing.score || "VS";
+
+    if (
+        hasHomeScore &&
+        hasAwayScore
+    ) {
+        scoreText =
+            homeScore + " - " + awayScore;
+    }
+
+    const homeName = cleanText(
         home.name,
-        "Home"
+        existing.home || existing.homeTeam || "Home"
     );
 
-    const awayTeam = cleanText(
+    const awayName = cleanText(
         away.name,
-        "Away"
+        existing.away || existing.awayTeam || "Away"
     );
 
     const leagueName = cleanText(
         league.name,
-        "Unknown League"
+        existing.league || "Unknown League"
     );
 
-    // Preserve admin-entered fields from the old match.
-    const preservedFields = {
-        streamUrl: existing.streamUrl || "",
-        goalEvents: existing.goalEvents || {},
-        adminNotes: existing.adminNotes || "",
-        stadium: existing.stadium || "",
-        channels: existing.channels || {},
-        homeLogo: existing.homeLogo || "",
-        awayLogo: existing.awayLogo || ""
-    };
+    const homeLogo = cleanText(
+        home.logo,
+        existing.homeLogo || existing.homeTeamLogo || ""
+    );
+
+    const awayLogo = cleanText(
+        away.logo,
+        existing.awayLogo || existing.awayTeamLogo || ""
+    );
+
+    const status = getMatchStatus(
+        fixture
+    );
+
+    const shortStatus = getShortStatus(
+        fixture
+    );
+
+    const statusText = getStatusText(
+        fixture
+    );
 
     const match = Object.assign(
         {},
@@ -736,23 +825,34 @@ function convertFixture(
         {
             gameId: fixtureId,
             fixtureId: fixtureId,
-            apiFixtureId: toNumber(fixtureId, fixtureId),
+            apiFixtureId: toNumber(
+                fixtureId,
+                fixtureId
+            ),
 
             apiProvider: "apifootball",
 
             competitionId: competitionId,
             competition: leagueName,
             league: leagueName,
-            country: cleanText(league.country, ""),
-            season: toNumber(league.season, 0),
+
+            country: cleanText(
+                league.country,
+                existing.country || ""
+            ),
+
+            season: toNumber(
+                league.season,
+                existing.season || 0
+            ),
 
             sportId: 1,
 
-            homeTeam: homeTeam,
-            awayTeam: awayTeam,
+            home: homeName,
+            away: awayName,
 
-            home: homeTeam,
-            away: awayTeam,
+            homeTeam: homeName,
+            awayTeam: awayName,
 
             homeTeamId: normalizeId(home.id),
             awayTeamId: normalizeId(away.id),
@@ -760,58 +860,61 @@ function convertFixture(
             homeScore: homeScore,
             awayScore: awayScore,
 
-            // Keep compatibility with layouts using these fields.
             homeGoals: homeScore,
             awayGoals: awayScore,
 
-            score: homeScore + " - " + awayScore,
+            score: scoreText,
 
-            status: matchStatus,
+            status: status,
             shortStatus: shortStatus,
             statusText: statusText,
             elapsed: getElapsed(fixture),
 
-            date: formattedDate,
-            time: formattedTime,
-            fixtureDate: fixtureDate,
+            date: formatDate(
+                timestamp,
+                fixture
+            ),
 
-            timestamp: timestamp,
-            matchTimeMillis: timestamp,
+            time: formatTime(
+                timestamp,
+                fixture
+            ),
 
-            venue: cleanText(venue.name, ""),
-            lastUpdated: Date.now(),
+            fixtureDate: cleanText(
+                fixtureInfo.date,
+                existing.fixtureDate || ""
+            ),
 
-            // The match is always saved, regardless of selection.
-            // The app can use this field to filter its display.
+            timestamp: timestamp || existing.timestamp || 0,
+
+            matchTimeMillis:
+                timestamp ||
+                existing.matchTimeMillis ||
+                0,
+
+            venue: cleanText(
+                venue.name,
+                existing.venue || ""
+            ),
+
+            stadium: existing.stadium ||
+                cleanText(venue.name, ""),
+
+            homeLogo: homeLogo,
+            awayLogo: awayLogo,
+
+            homeTeamLogo: homeLogo,
+            awayTeamLogo: awayLogo,
+
             competitionSelected: competitionSelected,
 
-            // API logos are used when available.
-            homeTeamLogo: cleanText(
-                home.logo,
-                preservedFields.homeLogo
-            ),
+            // Preserve all admin-managed fields.
+            streamUrl: existing.streamUrl || "",
+            goalEvents: existing.goalEvents || {},
+            adminNotes: existing.adminNotes || "",
+            channels: existing.channels || {},
 
-            awayTeamLogo: cleanText(
-                away.logo,
-                preservedFields.awayLogo
-            ),
-
-            homeLogo: cleanText(
-                home.logo,
-                preservedFields.homeLogo
-            ),
-
-            awayLogo: cleanText(
-                away.logo,
-                preservedFields.awayLogo
-            ),
-
-            // Keep existing admin information.
-            streamUrl: preservedFields.streamUrl,
-            goalEvents: preservedFields.goalEvents,
-            adminNotes: preservedFields.adminNotes,
-            stadium: preservedFields.stadium,
-            channels: preservedFields.channels
+            lastUpdated: Date.now()
         }
     );
 
@@ -831,9 +934,7 @@ async function main() {
     console.log("SPORTS HUB API-FOOTBALL SYNC");
     console.log("====================================");
 
-    // ----------------------------------------
-    // 1. READ SETTINGS
-    // ----------------------------------------
+    // 1. Read settings.
 
     const settingsSnapshot = await db
         .ref(SETTINGS_PATH)
@@ -845,19 +946,13 @@ async function main() {
 
     if (!isApiFootballSelected(settings)) {
         console.log(
-            "API-Football is not the selected provider."
-        );
-
-        console.log(
-            "Skipping API-Football sync."
+            "API-Football is not selected. Sync skipped."
         );
 
         return;
     }
 
-    // ----------------------------------------
-    // 2. READ EXISTING FIREBASE DATA
-    // ----------------------------------------
+    // 2. Read existing Firebase data.
 
     const results = await Promise.all([
         db.ref(COMPETITIONS_PATH).once("value"),
@@ -866,31 +961,33 @@ async function main() {
         db.ref(SYNC_SETTINGS_PATH).once("value")
     ]);
 
-    const competitions = asObject(results[0].val());
-    const selectionData = asObject(results[1].val());
-    const existingMatches = asObject(results[2].val());
-    const syncSettings = asObject(results[3].val());
-
-    const previousProvider = normalizeProvider(
-        syncSettings.currentProvider
+    const competitions = asObject(
+        results[0].val()
     );
 
-    const providerChanged =
-        previousProvider !== "" &&
-        previousProvider !== "apifootball";
+    const selectionData = asObject(
+        results[1].val()
+    );
 
-    console.log(
-        "Previous provider: " +
-        (previousProvider || "unknown")
+    const existingMatches = asObject(
+        results[2].val()
+    );
+
+    const syncSettings = asObject(
+        results[3].val()
     );
 
     console.log(
-        "Provider changed: " + providerChanged
+        "Existing matches: " +
+        Object.keys(existingMatches).length
     );
 
-    // ----------------------------------------
-    // 3. FETCH FIXTURES
-    // ----------------------------------------
+    console.log(
+        "Existing competitions: " +
+        Object.keys(competitions).length
+    );
+
+    // 3. Fetch fixtures.
 
     const fetchResult = await fetchAllFixtures();
 
@@ -898,23 +995,17 @@ async function main() {
 
     if (fixtures.length === 0) {
         console.log(
-            "No fixtures returned by the successful API requests."
+            "No fixtures received. Existing matches preserved."
         );
 
-        console.log(
-            "Existing Firebase matches will not be deleted."
-        );
-
-        // Do not perform provider cleanup on an empty result.
-        // Update the provider marker only after non-empty sync.
         return;
     }
 
-    // ----------------------------------------
-    // 4. PREPARE FIREBASE UPDATES
-    // ----------------------------------------
+    // 4. Prepare updates.
 
     const updates = {};
+
+    const processedCompetitions = {};
 
     let competitionCount = 0;
     let selectedCompetitionCount = 0;
@@ -922,35 +1013,42 @@ async function main() {
     let unselectedMatchCount = 0;
     let skippedFixtures = 0;
 
-    const processedCompetitions = {};
-
-    // ----------------------------------------
-    // 5. PROCESS EVERY FIXTURE
-    // ----------------------------------------
+    // 5. Process all fixtures.
 
     fixtures.forEach(function (fixture) {
-        const fixtureInfo = asObject(fixture.fixture);
-        const league = asObject(fixture.league);
+        const fixtureInfo = asObject(
+            fixture.fixture
+        );
 
-        const fixtureId = normalizeId(fixtureInfo.id);
-        const competitionId = normalizeId(league.id);
+        const league = asObject(
+            fixture.league
+        );
 
-        if (!fixtureId || !competitionId) {
+        const fixtureId = normalizeId(
+            fixtureInfo.id
+        );
+
+        const competitionId = normalizeId(
+            league.id
+        );
+
+        if (
+            !fixtureId ||
+            !competitionId
+        ) {
             skippedFixtures++;
             return;
         }
 
-        // Preserve current competition selection.
-        const selectionValue = getSelectionValue(
-            selectionData,
-            competitionId
-        );
+        const selectionValue =
+            selectionData[competitionId];
 
         const selected = isCompetitionSelected(
             selectionValue
         );
 
-        // Create/update competition only once per ID.
+        // Update competition once per competition ID.
+
         if (!processedCompetitions[competitionId]) {
             processedCompetitions[competitionId] = true;
 
@@ -958,33 +1056,27 @@ async function main() {
                 competitions[competitionId]
             );
 
-            const competition = convertCompetition(
+            updates[
+                COMPETITIONS_PATH +
+                "/" +
+                competitionId
+            ] = convertCompetition(
                 fixture,
                 existingCompetition,
                 selected
             );
 
-            updates[
-                COMPETITIONS_PATH + "/" + competitionId
-            ] = competition;
-
-            // Initialize selection only when missing.
-            // Never overwrite a selection already in Firebase.
+            // Initialize missing selection as false.
+            // Existing selection is never overwritten.
             if (
                 selectionData[competitionId] === undefined ||
                 selectionData[competitionId] === null
             ) {
                 updates[
-                    SELECTION_PATH + "/" + competitionId
-                ] = {
-                    selected: false,
-                    competitionId: competitionId,
-                    name: cleanText(
-                        league.name,
-                        "Unknown League"
-                    ),
-                    createdAt: Date.now()
-                };
+                    SELECTION_PATH +
+                    "/" +
+                    competitionId
+                ] = false;
             }
 
             competitionCount++;
@@ -994,25 +1086,22 @@ async function main() {
             }
         }
 
-        // ------------------------------------
-        // IMPORTANT:
-        // Do NOT skip unselected competitions.
-        // Save ALL fixtures to Firebase.
-        // ------------------------------------
+        // Save ALL fixtures.
+        // Selection affects display only.
 
         const existingMatch = asObject(
             existingMatches[fixtureId]
         );
 
-        const match = convertFixture(
+        updates[
+            MATCHES_PATH +
+            "/" +
+            fixtureId
+        ] = convertFixture(
             fixture,
             existingMatch,
             selected
         );
-
-        updates[
-            MATCHES_PATH + "/" + fixtureId
-        ] = match;
 
         if (selected) {
             selectedMatchCount++;
@@ -1021,26 +1110,41 @@ async function main() {
         }
     });
 
+    // 6. Save Firebase updates.
+
     if (Object.keys(updates).length === 0) {
         console.log(
-            "No valid fixture updates to write."
+            "No valid fixture updates."
         );
 
         return;
     }
 
-    // ----------------------------------------
-    // 6. SAVE TO FIREBASE
-    // ----------------------------------------
-
     await db.ref().update(updates);
+
+    // 7. Update sync status.
+    // No automatic match deletion.
+
+    const now = Date.now();
+
+    await db.ref(
+        SYNC_SETTINGS_PATH
+    ).update({
+        currentProvider: "apifootball",
+        lastApiFootballSync: now,
+        lastSuccessfulSync: now,
+        lastSyncStatus: "success",
+        lastSyncFixtureCount: fixtures.length,
+        lastSyncFailedRequests:
+            fetchResult.failedRequests
+    });
 
     console.log("");
     console.log("FIREBASE SYNC SUMMARY");
     console.log("---------------------");
 
     console.log(
-        "Unique fixtures received: " + fixtures.length
+        "Fixtures received: " + fixtures.length
     );
 
     console.log(
@@ -1048,106 +1152,42 @@ async function main() {
     );
 
     console.log(
-        "Selected competitions: " + selectedCompetitionCount
+        "Selected competitions: " +
+        selectedCompetitionCount
     );
 
     console.log(
-        "Matches in selected competitions: " + selectedMatchCount
+        "Matches in selected competitions: " +
+        selectedMatchCount
     );
 
     console.log(
-        "Matches in unselected competitions: " + unselectedMatchCount
+        "Matches in unselected competitions: " +
+        unselectedMatchCount
     );
 
     console.log(
-        "Invalid fixtures skipped: " + skippedFixtures
+        "Invalid fixtures skipped: " +
+        skippedFixtures
     );
 
     console.log(
-        "Total Firebase paths updated: " +
+        "Failed API requests: " +
+        fetchResult.failedRequests
+    );
+
+    console.log(
+        "Firebase paths updated: " +
         Object.keys(updates).length
     );
 
-    // ----------------------------------------
-    // 7. PROVIDER SWITCH CLEANUP
-    // ----------------------------------------
-
-    // Only remove old 365Scores football matches when:
-    // - provider has actually changed;
-    // - all requests succeeded;
-    // - at least one fixture was received;
-    // - the new provider's fixtures were saved successfully.
-    //
-    // If any request failed, keep old records to avoid
-    // accidentally deleting data because of a partial API result.
-
-    if (
-        providerChanged &&
-        fetchResult.failedRequests === 0 &&
-        fixtures.length > 0
-    ) {
-        const cleanupUpdates = {};
-
-        Object.keys(existingMatches).forEach(
-            function (matchKey) {
-                const match = asObject(
-                    existingMatches[matchKey]
-                );
-
-                const provider = normalizeProvider(
-                    match.apiProvider
-                );
-
-                const isFootball = (
-                    toNumber(match.sportId, 1) === 1
-                );
-
-                if (
-                    provider === "365scores" &&
-                    isFootball
-                ) {
-                    cleanupUpdates[
-                        MATCHES_PATH + "/" + matchKey
-                    ] = null;
-                }
-            }
-        );
-
-        const cleanupKeys = Object.keys(cleanupUpdates);
-
-        if (cleanupKeys.length > 0) {
-            await db.ref().update(cleanupUpdates);
-
-            console.log(
-                "Removed old 365Scores football matches: " +
-                cleanupKeys.length
-            );
-        } else {
-            console.log(
-                "No old 365Scores football matches to remove."
-            );
-        }
-    } else if (providerChanged) {
-        console.log(
-            "Provider cleanup skipped because the fetch was partial or empty."
-        );
-    }
-
-    // ----------------------------------------
-    // 8. SAVE CURRENT PROVIDER
-    // ----------------------------------------
-
-    await db.ref(
-        SYNC_SETTINGS_PATH + "/currentProvider"
-    ).set("apifootball");
-
-    await db.ref(
-        SYNC_SETTINGS_PATH + "/lastApiFootballSync"
-    ).set(Date.now());
+    console.log(
+        "Existing matches were not deleted."
+    );
 
     console.log("");
     console.log(
-        "Sports Hub API-Football sync completed successfully."
+        "Sports Hub API-Football sync completed."
     );
 }
 
@@ -1157,15 +1197,21 @@ async function main() {
 
 main()
     .then(function () {
-        console.log("Sync process finished.");
+        console.log(
+            "Sync process finished."
+        );
+
         process.exit(0);
     })
-    .catch(function (error) {
+    .catch(async function (error) {
         console.error("");
         console.error("SYNC FAILED");
-        console.error(error && error.stack
-            ? error.stack
-            : error);
+
+        console.error(
+            error && error.stack
+                ? error.stack
+                : error
+        );
 
         process.exit(1);
     });
