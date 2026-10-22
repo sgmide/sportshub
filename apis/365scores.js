@@ -28,12 +28,10 @@ function initializeFirebase() {
     const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
     const databaseURL = process.env.FIREBASE_DATABASE_URL;
 
-    if (!serviceAccountJson) {
-        throw new Error("Missing FIREBASE_SERVICE_ACCOUNT secret");
-    }
-
-    if (!databaseURL) {
-        throw new Error("Missing FIREBASE_DATABASE_URL secret");
+    if (!serviceAccountJson || !databaseURL) {
+        throw new Error(
+            "Missing FIREBASE_SERVICE_ACCOUNT or FIREBASE_DATABASE_URL secret"
+        );
     }
 
     admin.initializeApp({
@@ -55,8 +53,15 @@ function delay(ms) {
 }
 
 function toPositiveInteger(value) {
+    if (value === null || value === undefined || value === "") {
+        return null;
+    }
+
     const number = Number(value);
-    return Number.isInteger(number) && number > 0 ? number : null;
+
+    return Number.isSafeInteger(number) && number > 0
+        ? number
+        : null;
 }
 
 function getDateParts(date) {
@@ -91,6 +96,7 @@ function formatMatchDate(value) {
     }
 
     const p = getDateParts(date);
+
     return p.day + "-" + p.month + "-" + p.year;
 }
 
@@ -138,6 +144,10 @@ function getCompetitionId(competition) {
         return null;
     }
 
+    if (typeof competition !== "object") {
+        return toPositiveInteger(competition);
+    }
+
     return toPositiveInteger(
         competition.id ||
         competition.competitionId
@@ -149,11 +159,19 @@ function getGameCompetitionId(game) {
         return null;
     }
 
-    return toPositiveInteger(
-        game.competitionId ||
-        (game.competition && game.competition.id) ||
-        game.competition
-    );
+    const directId = toPositiveInteger(game.competitionId);
+
+    if (directId !== null) {
+        return directId;
+    }
+
+    const nestedId = getCompetitionId(game.competition);
+
+    if (nestedId !== null) {
+        return nestedId;
+    }
+
+    return toPositiveInteger(game.competitionID);
 }
 
 function getSportId(item) {
@@ -161,10 +179,17 @@ function getSportId(item) {
         return null;
     }
 
-    return toPositiveInteger(
-        item.sportId ||
-        (item.sport && item.sport.id)
-    );
+    const directId = toPositiveInteger(item.sportId);
+
+    if (directId !== null) {
+        return directId;
+    }
+
+    if (item.sport && typeof item.sport === "object") {
+        return toPositiveInteger(item.sport.id);
+    }
+
+    return null;
 }
 
 function getCompetitionName(competition) {
@@ -183,11 +208,13 @@ function isSelected(value) {
     }
 
     if (value && typeof value === "object") {
-        return isSelected(
-            value.selected !== undefined
-                ? value.selected
-                : value.isSelected
-        );
+        if (value.selected !== undefined) {
+            return isSelected(value.selected);
+        }
+
+        if (value.isSelected !== undefined) {
+            return isSelected(value.isSelected);
+        }
     }
 
     return false;
@@ -200,22 +227,70 @@ function getGameStartTime(game) {
         "";
 }
 
+function getTeam(game, side) {
+    const keys = side === "home"
+        ? ["homeCompetitor", "homeTeam", "home"]
+        : ["awayCompetitor", "awayTeam", "away"];
+
+    for (const key of keys) {
+        const value = game[key];
+
+        if (value && typeof value === "object") {
+            return value;
+        }
+    }
+
+    return {};
+}
+
+function getTeamName(team) {
+    if (typeof team === "string") {
+        return team;
+    }
+
+    return team.name ||
+        team.shortName ||
+        team.displayName ||
+        "";
+}
+
+function getTeamScore(team) {
+    if (team.score === undefined || team.score === null) {
+        return "";
+    }
+
+    return String(team.score);
+}
+
 // ==================================================
 // FETCH JSON
 // ==================================================
 
 async function fetchJson(url) {
-    const response = await fetch(url, {
-        method: "GET",
-        headers: HEADERS,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT)
-    });
+    const controller = new AbortController();
 
-    if (!response.ok) {
-        throw new Error("HTTP " + response.status + " - " + url);
+    const timer = setTimeout(function () {
+        controller.abort();
+    }, REQUEST_TIMEOUT);
+
+    try {
+        const response = await fetch(url, {
+            method: "GET",
+            headers: HEADERS,
+            signal: controller.signal
+        });
+
+        if (!response.ok) {
+            throw new Error(
+                "HTTP " + response.status + " - " + url
+            );
+        }
+
+        return await response.json();
+
+    } finally {
+        clearTimeout(timer);
     }
-
-    return await response.json();
 }
 
 function buildBaseUrl(apiUrl) {
@@ -241,11 +316,15 @@ async function fetchSportsAndCompetitions(apiUrl) {
     const data = await fetchJson(url.toString());
 
     if (!data || !Array.isArray(data.sports)) {
-        throw new Error("API response does not contain sports array");
+        throw new Error(
+            "API response does not contain sports array"
+        );
     }
 
     if (!Array.isArray(data.competitions)) {
-        throw new Error("API response does not contain competitions array");
+        throw new Error(
+            "API response does not contain competitions array"
+        );
     }
 
     console.log("API sports:", data.sports.length);
@@ -271,24 +350,39 @@ function normalizeSportIds(settings) {
 
             if (typeof item === "number" || typeof item === "string") {
                 const id = toPositiveInteger(item);
-                if (id !== null) result.add(id);
+
+                if (id !== null) {
+                    result.add(id);
+                }
+
             } else if (item && typeof item === "object") {
-                if (item.selected === false) continue;
+                if (item.selected === false) {
+                    continue;
+                }
 
                 const id = toPositiveInteger(item.id);
-                if (id !== null) result.add(id);
+
+                if (id !== null) {
+                    result.add(id);
+                }
             }
         }
 
-        // Legacy format: [null, true, true, false]
+        // Legacy boolean array format.
         if (selectedSports.some(function (item, index) {
-            return item === true && index > 0;
+            return index > 0 && item === true;
         })) {
             for (let i = 1; i < selectedSports.length; i++) {
-                if (selectedSports[i] === true) result.add(i);
+                if (selectedSports[i] === true) {
+                    result.add(i);
+                }
             }
         }
-    } else if (selectedSports && typeof selectedSports === "object") {
+
+    } else if (
+        selectedSports &&
+        typeof selectedSports === "object"
+    ) {
         for (const key of Object.keys(selectedSports)) {
             const item = selectedSports[key];
 
@@ -299,7 +393,9 @@ function normalizeSportIds(settings) {
                         : key
                 );
 
-                if (id !== null) result.add(id);
+                if (id !== null) {
+                    result.add(id);
+                }
             }
         }
     }
@@ -309,7 +405,10 @@ function normalizeSportIds(settings) {
         (selectedSports === undefined || selectedSports === null)
     ) {
         const oldId = toPositiveInteger(settings.selected_sport);
-        if (oldId !== null) result.add(oldId);
+
+        if (oldId !== null) {
+            result.add(oldId);
+        }
     }
 
     return Array.from(result);
@@ -341,8 +440,6 @@ async function fetchGames(apiUrl, sportId, date) {
 
     console.log("Games received:", data.games.length);
 
-    // Some API responses omit sportId on each game.
-    // Preserve the sport ID from the request as a fallback.
     return data.games.map(function (game) {
         if (getSportId(game) === null) {
             game._syncSportId = sportId;
@@ -357,12 +454,26 @@ async function fetchGames(apiUrl, sportId, date) {
 // ==================================================
 
 function getMatchStatus(game) {
-    const text = String(game.statusText || "").trim();
-    const shortText = String(game.shortStatusText || text).trim();
-    const normalized = (text + " " + shortText).toLowerCase();
+    const text = String(
+        game.statusText || ""
+    ).trim();
 
-    if (normalized.includes("postponed") || normalized.includes("ppd")) {
-        return { status: "Postponed", shortStatus: "PPD" };
+    const shortText = String(
+        game.shortStatusText || text
+    ).trim();
+
+    const normalized = (
+        text + " " + shortText
+    ).toLowerCase();
+
+    if (
+        normalized.includes("postponed") ||
+        normalized.includes("ppd")
+    ) {
+        return {
+            status: "Postponed",
+            shortStatus: "PPD"
+        };
     }
 
     if (
@@ -370,15 +481,30 @@ function getMatchStatus(game) {
         normalized.includes("canceled") ||
         normalized.includes("canc")
     ) {
-        return { status: "Cancelled", shortStatus: "CANC" };
+        return {
+            status: "Cancelled",
+            shortStatus: "CANC"
+        };
     }
 
-    if (normalized.includes("abandoned") || normalized.includes("abd")) {
-        return { status: "Abandoned", shortStatus: "ABD" };
+    if (
+        normalized.includes("abandoned") ||
+        normalized.includes("abd")
+    ) {
+        return {
+            status: "Abandoned",
+            shortStatus: "ABD"
+        };
     }
 
-    if (normalized.includes("penalties") || normalized.includes("penalty shootout")) {
-        return { status: "After Penalties", shortStatus: "AP" };
+    if (
+        normalized.includes("penalties") ||
+        normalized.includes("penalty shootout")
+    ) {
+        return {
+            status: "After Penalties",
+            shortStatus: "AP"
+        };
     }
 
     if (
@@ -386,11 +512,20 @@ function getMatchStatus(game) {
         normalized.includes("half time") ||
         normalized.includes("halftime")
     ) {
-        return { status: "Half Time", shortStatus: "HT" };
+        return {
+            status: "Half Time",
+            shortStatus: "HT"
+        };
     }
 
-    if (normalized.includes("extra time") || normalized === "et") {
-        return { status: "Extra Time", shortStatus: "ET" };
+    if (
+        normalized.includes("extra time") ||
+        normalized === "et"
+    ) {
+        return {
+            status: "Extra Time",
+            shortStatus: "ET"
+        };
     }
 
     if (
@@ -401,7 +536,10 @@ function getMatchStatus(game) {
         normalized.includes("quarter") ||
         normalized.includes("period")
     ) {
-        return { status: "Live", shortStatus: shortText || "LIVE" };
+        return {
+            status: "Live",
+            shortStatus: shortText || "LIVE"
+        };
     }
 
     if (
@@ -410,7 +548,10 @@ function getMatchStatus(game) {
         normalized.includes("final") ||
         normalized === "ft"
     ) {
-        return { status: "Finished", shortStatus: "FT" };
+        return {
+            status: "Finished",
+            shortStatus: "FT"
+        };
     }
 
     return {
@@ -426,52 +567,61 @@ function getMatchStatus(game) {
 function convertMatch(game, oldMatch, requestedSportId) {
     const gameId = toPositiveInteger(game.id);
 
-    const home = game.homeCompetitor || {};
-    const away = game.awayCompetitor || {};
+    const home = getTeam(game, "home");
+    const away = getTeam(game, "away");
 
-    const homeId = toPositiveInteger(home.id) || 0;
-    const awayId = toPositiveInteger(away.id) || 0;
+    const homeId = toPositiveInteger(home.id);
+    const awayId = toPositiveInteger(away.id);
 
     const startTime = getGameStartTime(game);
     const timestamp = Date.parse(startTime);
 
-    if (gameId === null || !Number.isFinite(timestamp)) {
+    if (
+        gameId === null ||
+        !Number.isFinite(timestamp)
+    ) {
         return null;
     }
 
-    const homeScore =
-        home.score === undefined || home.score === null
-            ? ""
-            : home.score;
-
-    const awayScore =
-        away.score === undefined || away.score === null
-            ? ""
-            : away.score;
+    const homeScore = getTeamScore(home);
+    const awayScore = getTeamScore(away);
 
     const old = oldMatch || {};
     const status = getMatchStatus(game);
 
+    const competition = game.competition;
+
     const league =
         game.competitionDisplayName ||
         game.competitionName ||
-        (game.competition && typeof game.competition === "object"
-            ? game.competition.name
-            : game.competition) ||
+        (
+            competition && typeof competition === "object"
+                ? competition.name
+                : typeof competition === "string"
+                    ? competition
+                    : ""
+        ) ||
         old.league ||
         "Unknown Competition";
 
     return Object.assign({}, old, {
         gameId: gameId,
+
         competitionId: getGameCompetitionId(game) || 0,
         sportId: getSportId(game) || requestedSportId || 1,
 
         league: String(league),
-        home: home.name || "Home",
-        away: away.name || "Away",
 
-        homeLogo: homeId > 0 ? IMAGE_URL + homeId : "",
-        awayLogo: awayId > 0 ? IMAGE_URL + awayId : "",
+        home: getTeamName(home) || old.home || "Home",
+        away: getTeamName(away) || old.away || "Away",
+
+        homeLogo: homeId
+            ? IMAGE_URL + homeId
+            : (old.homeLogo || ""),
+
+        awayLogo: awayId
+            ? IMAGE_URL + awayId
+            : (old.awayLogo || ""),
 
         score: homeScore !== "" && awayScore !== ""
             ? homeScore + " - " + awayScore
@@ -483,9 +633,10 @@ function convertMatch(game, oldMatch, requestedSportId) {
         date: formatMatchDate(startTime),
         time: formatMatchTime(startTime),
         matchTimeMillis: timestamp,
+
         stadium: game.venueName || old.stadium || "",
 
-        // Keep admin-added stream URL.
+        // Preserve manually added admin data.
         streamUrl: typeof old.streamUrl === "string"
             ? old.streamUrl
             : ""
@@ -506,26 +657,32 @@ async function main() {
     const settingsSnapshot = await db.ref("settings").once("value");
     const settings = settingsSnapshot.val() || {};
 
-    const selectedParser = String(settings.selected_parser || "parse1");
+    const selectedParser = String(
+        settings.selected_parser || "parse1"
+    );
+
     const parserConfig =
-        settings.parse && settings.parse[selectedParser]
+        settings.parse &&
+        settings.parse[selectedParser]
             ? settings.parse[selectedParser]
             : {};
 
-    const apiParser = String(parserConfig.api_parser || "")
-        .trim()
-        .toLowerCase();
+    const apiParser = String(
+        parserConfig.api_parser || ""
+    ).trim().toLowerCase();
 
     const apiUrl = String(
         parserConfig.api_url || DEFAULT_API_URL
     ).trim();
 
-    if (apiParser && apiParser !== "365" && apiParser !== "365scores") {
-        throw new Error("Selected parser is not 365Scores: " + apiParser);
-    }
-
-    if (!apiUrl) {
-        throw new Error("365Scores api_url is empty");
+    if (
+        apiParser &&
+        apiParser !== "365" &&
+        apiParser !== "365scores"
+    ) {
+        throw new Error(
+            "Selected parser is not 365Scores: " + apiParser
+        );
     }
 
     const selectedSportIds = normalizeSportIds(settings);
@@ -534,24 +691,27 @@ async function main() {
     console.log("Selected sport IDs:", selectedSportIds);
 
     if (selectedSportIds.length === 0) {
-        throw new Error("No sports selected in settings/selected_sports");
+        throw new Error(
+            "No sports selected in settings/selected_sports"
+        );
     }
 
     const catalog = await fetchSportsAndCompetitions(apiUrl);
+
     const allSports = catalog.sports;
     const allCompetitions = catalog.competitions;
 
-    const existingSportsSnap = await db.ref("sports").once("value");
-    const existingSports = existingSportsSnap.val() || {};
+    const snapshots = await Promise.all([
+        db.ref("sports").once("value"),
+        db.ref("competition_selection").once("value"),
+        db.ref("competitions").once("value"),
+        db.ref("matches").once("value")
+    ]);
 
-    const selectionSnap = await db.ref("competition_selection").once("value");
-    const existingSelection = selectionSnap.val() || {};
-
-    const competitionsSnap = await db.ref("competitions").once("value");
-    const existingCompetitions = competitionsSnap.val() || {};
-
-    const matchesSnap = await db.ref("matches").once("value");
-    const existingMatches = matchesSnap.val() || {};
+    const existingSports = snapshots[0].val() || {};
+    const existingSelection = snapshots[1].val() || {};
+    const existingCompetitions = snapshots[2].val() || {};
+    const existingMatches = snapshots[3].val() || {};
 
     // ----------------------------------------------
     // UPDATE SPORTS
@@ -561,7 +721,10 @@ async function main() {
 
     for (const sport of allSports) {
         const id = toPositiveInteger(sport.id);
-        if (id === null) continue;
+
+        if (id === null) {
+            continue;
+        }
 
         const key = String(id);
         const old = existingSports[key] || {};
@@ -577,7 +740,7 @@ async function main() {
     }
 
     // ----------------------------------------------
-    // UPDATE COMPETITIONS WITHOUT RESETTING SELECTION
+    // UPDATE COMPETITIONS
     // ----------------------------------------------
 
     const competitionUpdates = {};
@@ -588,15 +751,25 @@ async function main() {
         const id = getCompetitionId(item);
         const sportId = getSportId(item);
 
-        if (id === null || sportId === null) continue;
-        if (!selectedSportSet.has(sportId)) continue;
+        if (id === null || sportId === null) {
+            continue;
+        }
+
+        if (!selectedSportSet.has(sportId)) {
+            continue;
+        }
 
         const key = String(id);
         const old = existingCompetitions[key] || {};
 
         let selected;
 
-        if (Object.prototype.hasOwnProperty.call(existingSelection, key)) {
+        if (
+            Object.prototype.hasOwnProperty.call(
+                existingSelection,
+                key
+            )
+        ) {
             selected = isSelected(existingSelection[key]);
         } else {
             selected = isSelected(old.selected);
@@ -617,7 +790,9 @@ async function main() {
             imageVersion: Number(item.imageVersion || 0)
         });
 
-        if (!old.id) newCompetitionCount++;
+        if (!old.id) {
+            newCompetitionCount++;
+        }
     }
 
     const catalogUpdates = {};
@@ -627,11 +802,13 @@ async function main() {
     }
 
     for (const key of Object.keys(competitionUpdates)) {
-        catalogUpdates["competitions/" + key] = competitionUpdates[key];
+        catalogUpdates["competitions/" + key] =
+            competitionUpdates[key];
     }
 
     for (const key of Object.keys(selectionUpdates)) {
-        catalogUpdates["competition_selection/" + key] = selectionUpdates[key];
+        catalogUpdates["competition_selection/" + key] =
+            selectionUpdates[key];
     }
 
     if (Object.keys(catalogUpdates).length > 0) {
@@ -639,11 +816,14 @@ async function main() {
     }
 
     console.log("Sports updated:", Object.keys(sportsUpdates).length);
-    console.log("Competitions updated:", Object.keys(competitionUpdates).length);
+    console.log(
+        "Competitions updated:",
+        Object.keys(competitionUpdates).length
+    );
     console.log("New competitions:", newCompetitionCount);
 
     // ----------------------------------------------
-    // FETCH MATCHES
+    // FETCH GAMES
     // ----------------------------------------------
 
     const discoveredGames = [];
@@ -654,9 +834,19 @@ async function main() {
             const date = getDateOffset(offset);
 
             try {
-                const games = await fetchGames(apiUrl, sportId, date);
-                discoveredGames.push.apply(discoveredGames, games);
+                const games = await fetchGames(
+                    apiUrl,
+                    sportId,
+                    date
+                );
+
+                discoveredGames.push.apply(
+                    discoveredGames,
+                    games
+                );
+
                 successfulRequests++;
+
             } catch (error) {
                 console.error(
                     "Games request failed:",
@@ -671,11 +861,13 @@ async function main() {
     }
 
     if (successfulRequests === 0) {
-        throw new Error("All games API requests failed; matches were not changed.");
+        throw new Error(
+            "All games API requests failed; matches were not changed."
+        );
     }
 
     // ----------------------------------------------
-    // SELECTED COMPETITIONS
+    // RESOLVE SELECTIONS
     // ----------------------------------------------
 
     const effectiveSelection = Object.assign(
@@ -684,36 +876,39 @@ async function main() {
         selectionUpdates
     );
 
-    // If the selection node exists, it is the primary source.
-    // Otherwise use competitions/{id}.selected.
-    const selectionNodeExists =
-        Object.keys(existingSelection).length > 0;
-
     function isCompetitionSelected(competitionId) {
         const key = String(competitionId);
 
-        if (Object.prototype.hasOwnProperty.call(effectiveSelection, key)) {
+        // The explicit selection node is authoritative.
+        if (
+            Object.prototype.hasOwnProperty.call(
+                effectiveSelection,
+                key
+            )
+        ) {
             return isSelected(effectiveSelection[key]);
         }
 
         const competition =
             competitionUpdates[key] ||
-            existingCompetitions[key] ||
-            {};
+            existingCompetitions[key];
 
-        return isSelected(competition.selected);
+        return !!competition && isSelected(competition.selected);
     }
+
+    const selectedCompetitionKeys =
+        Object.keys(effectiveSelection).filter(function (key) {
+            return isSelected(effectiveSelection[key]);
+        });
 
     console.log(
         "Selected competition count:",
-        Object.keys(effectiveSelection).filter(function (key) {
-            return isSelected(effectiveSelection[key]);
-        }).length
+        selectedCompetitionKeys.length
     );
 
     console.log(
-        "Competition selection node exists:",
-        selectionNodeExists
+        "Selected competition IDs:",
+        selectedCompetitionKeys.join(", ")
     );
 
     // ----------------------------------------------
@@ -725,16 +920,24 @@ async function main() {
 
     let skippedNoId = 0;
     let skippedSport = 0;
-    let skippedCompetition = 0;
     let skippedUnselected = 0;
     let skippedInvalidMatch = 0;
+    let debugCount = 0;
 
     for (const game of discoveredGames) {
         const gameId = toPositiveInteger(game.id);
-        const sportId = getSportId(game) || toPositiveInteger(game._syncSportId);
+
+        const sportId =
+            getSportId(game) ||
+            toPositiveInteger(game._syncSportId);
+
         const competitionId = getGameCompetitionId(game);
 
-        if (gameId === null || sportId === null || competitionId === null) {
+        if (
+            gameId === null ||
+            sportId === null ||
+            competitionId === null
+        ) {
             skippedNoId++;
             continue;
         }
@@ -744,15 +947,39 @@ async function main() {
             continue;
         }
 
-        // A competition must be selected in the admin app.
-        if (!isCompetitionSelected(competitionId)) {
+        const selected = isCompetitionSelected(competitionId);
+
+        if (!selected && debugCount < 5) {
+            console.log("SELECTION DEBUG:", JSON.stringify({
+                gameId: gameId,
+                sportId: sportId,
+                gameCompetitionId: competitionId,
+                gameCompetitionName:
+                    game.competitionDisplayName ||
+                    game.competitionName ||
+                    "",
+                firebaseSelection:
+                    effectiveSelection[String(competitionId)],
+                firebaseCompetition:
+                    competitionUpdates[String(competitionId)] ||
+                    existingCompetitions[String(competitionId)] ||
+                    null
+            }));
+
+            debugCount++;
+        }
+
+        if (!selected) {
             skippedUnselected++;
             continue;
         }
 
         const gameKey = String(gameId);
 
-        if (seenGames.has(gameKey)) continue;
+        if (seenGames.has(gameKey)) {
+            continue;
+        }
+
         seenGames.add(gameKey);
 
         const converted = convertMatch(
@@ -787,20 +1014,26 @@ async function main() {
     console.log("365Scores Sync Completed");
     console.log("Selected sport count:", selectedSportIds.length);
     console.log("Sports updated:", Object.keys(sportsUpdates).length);
-    console.log("Competitions updated:", Object.keys(competitionUpdates).length);
+    console.log(
+        "Competitions updated:",
+        Object.keys(competitionUpdates).length
+    );
     console.log("New competitions:", newCompetitionCount);
     console.log("Successful games requests:", successfulRequests);
     console.log("Games received:", discoveredGames.length);
     console.log("Skipped - missing IDs:", skippedNoId);
     console.log("Skipped - unselected sports:", skippedSport);
-    console.log("Skipped - unselected competitions:", skippedUnselected);
+    console.log(
+        "Skipped - unselected competitions:",
+        skippedUnselected
+    );
     console.log("Skipped - invalid matches:", skippedInvalidMatch);
     console.log("Selected matches synced:", matchKeys.length);
     console.log("==================================");
 
     if (matchKeys.length === 0) {
         console.log(
-            "No matches were saved. Check selected competition IDs and selection values."
+            "No matches were saved. Review SELECTION DEBUG above."
         );
     }
 }
@@ -814,10 +1047,14 @@ main()
         if (admin.apps.length > 0) {
             await admin.app().delete();
         }
+
         process.exit(0);
     })
     .catch(async function (error) {
-        console.error("365Scores sync failed:", error.stack || error.message);
+        console.error(
+            "365Scores sync failed:",
+            error.stack || error.message
+        );
 
         if (admin.apps.length > 0) {
             try {
