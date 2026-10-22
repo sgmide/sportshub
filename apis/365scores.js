@@ -1,1440 +1,1290 @@
 "use strict";
 
 const admin = require("firebase-admin");
-
-const DEFAULT_API_URL = "https://webws.365scores.com/web/games/";
-const IMAGE_URL = "https://imagecache.365scores.com/image/upload/";
-
-const TIME_ZONE = "Asia/Kolkata";
-const REQUEST_TIMEOUT = 30000;
-const REQUEST_DELAY = 500;
+const axios = require("axios");
 
 const PROVIDER = "365scores";
 
-let db;
+const API_URL =
+    "https://webws.365scores.com/web/games/";
 
-// --------------------------------------------------
-// FIREBASE INITIALIZATION
-// --------------------------------------------------
+const IMAGE_URL =
+    "https://imagecache.365scores.com/image/upload/";
 
-function initializeFirebase() {
-if (admin.apps.length > 0) {
-return;
-}
+const TIME_ZONE = "Asia/Kolkata";
+const DATE_RANGE = 1;
 
-const serviceAccountText = process.env.FIREBASE_SERVICE_ACCOUNT;    
-const databaseURL = process.env.FIREBASE_DATABASE_URL;    
+const REQUEST_TIMEOUT = 30000;
+const REQUEST_DELAY = 500;
 
-if (!serviceAccountText) {    
-    throw new Error("FIREBASE_SERVICE_ACCOUNT secret missing");    
-}    
+const FIREBASE_SERVICE_ACCOUNT =
+    process.env.FIREBASE_SERVICE_ACCOUNT;
 
-if (!databaseURL) {    
-    throw new Error("FIREBASE_DATABASE_URL secret missing");    
-}    
+const FIREBASE_DATABASE_URL =
+    process.env.FIREBASE_DATABASE_URL;
 
-let serviceAccount;    
+const API_HEADERS = {
+    "User-Agent":
+        "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/130.0 Mobile Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://www.365scores.com/"
+};
 
-try {    
-    serviceAccount = JSON.parse(serviceAccountText);    
-} catch (error) {    
-    throw new Error(    
-        "FIREBASE_SERVICE_ACCOUNT is not valid JSON"    
-    );    
-}    
-
-admin.initializeApp({    
-    credential: admin.credential.cert(serviceAccount),    
-    databaseURL: databaseURL    
-});    
-
-db = admin.database();
-
-}
-
-// --------------------------------------------------
-// COMMON HELPERS
-// --------------------------------------------------
+const DEFAULT_SPORTS = {
+    "01": {
+        id: 1,
+        name: "Football"
+    },
+    "02": {
+        id: 2,
+        name: "Basketball"
+    },
+    "03": {
+        id: 3,
+        name: "Tennis"
+    },
+    "04": {
+        id: 4,
+        name: "Hockey"
+    },
+    "05": {
+        id: 5,
+        name: "Handball"
+    },
+    "06": {
+        id: 6,
+        name: "A. Football"
+    },
+    "07": {
+        id: 7,
+        name: "Baseball"
+    },
+    "08": {
+        id: 8,
+        name: "Volleyball"
+    },
+    "09": {
+        id: 9,
+        name: "Rugby"
+    }
+};
 
 function sleep(ms) {
-return new Promise(function (resolve) {
-setTimeout(resolve, ms);
-});
-}
-
-function toNumber(value, fallback) {
-const number = Number(value);
-
-if (!Number.isFinite(number)) {    
-    return fallback;    
-}    
-
-return number;
-
-}
-
-function toText(value, fallback) {
-if (value === undefined || value === null) {
-return fallback || "";
-}
-
-return String(value);
-
-}
-
-function isObject(value) {
-return value !== null &&
-typeof value === "object" &&
-!Array.isArray(value);
+    return new Promise(function (resolve) {
+        setTimeout(resolve, ms);
+    });
 }
 
 function cleanKey(value) {
-return String(value).replace(/[.#$[]/]/g, "_");
+    return String(value == null ? "" : value)
+        .trim()
+        .replace(/[.#$\[\]/]/g, "_");
 }
 
-function getFirstValue() {
-for (let i = 0; i < arguments.length; i++) {
-const value = arguments[i];
+function normalizeText(value) {
+    if (value == null) {
+        return "";
+    }
 
-if (    
-        value !== undefined &&    
-        value !== null &&    
-        value !== ""    
-    ) {    
-        return value;    
-    }    
-}    
-
-return null;
-
+    return String(value).trim();
 }
 
-function normalizeBoolean(value) {
-if (value === true || value === 1 || value === "1") {
-return true;
+function normalizeBoolean(value, fallback) {
+    if (value === true || value === false) {
+        return value;
+    }
+
+    if (typeof value === "string") {
+        const v = value.toLowerCase().trim();
+
+        if (v === "true" || v === "1" || v === "yes") {
+            return true;
+        }
+
+        if (v === "false" || v === "0" || v === "no") {
+            return false;
+        }
+    }
+
+    return fallback;
 }
 
-if (    
-    typeof value === "string" &&    
-    value.toLowerCase() === "true"    
-) {    
-    return true;    
-}    
-
-return false;
-
+function getTimestamp() {
+    return Date.now();
 }
 
-function getTimestamp(value) {
-if (value === undefined || value === null || value === "") {
-return 0;
+function getDateString(date) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: TIME_ZONE,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+    }).formatToParts(date);
+
+    let year = "";
+    let month = "";
+    let day = "";
+
+    parts.forEach(function (part) {
+        if (part.type === "year") {
+            year = part.value;
+        } else if (part.type === "month") {
+            month = part.value;
+        } else if (part.type === "day") {
+            day = part.value;
+        }
+    });
+
+    return year + "-" + month + "-" + day;
 }
 
-if (typeof value === "number") {    
-    return value < 1000000000000    
-        ? value * 1000    
-        : value;    
-}    
+function getDateRange() {
+    const dates = [];
+    const today = getDateString(new Date());
 
-const numeric = Number(value);    
+    const base = new Date(today + "T12:00:00Z");
 
-if (Number.isFinite(numeric) && numeric > 0) {    
-    return numeric < 1000000000000    
-        ? numeric * 1000    
-        : numeric;    
-}    
+    for (let i = -DATE_RANGE; i <= DATE_RANGE; i++) {
+        const d = new Date(
+            base.getTime() + i * 86400000
+        );
 
-const parsed = Date.parse(value);    
+        dates.push(getDateString(d));
+    }
 
-return Number.isFinite(parsed) ? parsed : 0;
-
+    return dates;
 }
 
-// --------------------------------------------------
-// SETTINGS
-// --------------------------------------------------
+function getNestedObject(obj, path) {
+    let current = obj;
 
-async function getSettings() {
-const snapshot = await db.ref("settings").once("value");
+    for (let i = 0; i < path.length; i++) {
+        if (
+            current == null ||
+            typeof current !== "object"
+        ) {
+            return null;
+        }
 
-return snapshot.val() || {};
+        current = current[path[i]];
+    }
 
+    return current == null ? null : current;
+}
+
+function getObjectId(obj) {
+    if (obj == null) {
+        return "";
+    }
+
+    if (typeof obj !== "object") {
+        return normalizeText(obj);
+    }
+
+    return normalizeText(
+        obj.id ||
+        obj.ID ||
+        obj.competitorId ||
+        obj.competitionId ||
+        obj.sportId ||
+        obj.gameId ||
+        obj.teamId ||
+        obj.value ||
+        ""
+    );
+}
+
+function getName(obj) {
+    if (obj == null) {
+        return "";
+    }
+
+    if (typeof obj !== "object") {
+        return normalizeText(obj);
+    }
+
+    return normalizeText(
+        obj.name ||
+        obj.shortName ||
+        obj.longName ||
+        obj.displayName ||
+        obj.title ||
+        obj.value ||
+        ""
+    );
+}
+
+function getTeamName(team) {
+    return getName(team);
+}
+
+function getTeamLogo(team) {
+    if (!team || typeof team !== "object") {
+        return "";
+    }
+
+    const direct =
+        team.logo ||
+        team.image ||
+        team.imageUrl ||
+        team.logoUrl ||
+        team.picture ||
+        team.pictureUrl ||
+        "";
+
+    if (direct) {
+        return normalizeText(direct);
+    }
+
+    const imageId =
+        team.imageID ||
+        team.imageId ||
+        team.logoId ||
+        team.pictureId ||
+        "";
+
+    if (imageId) {
+        return IMAGE_URL + String(imageId);
+    }
+
+    return "";
+}
+
+function getScore(game, side) {
+    const names = side === "home"
+        ? ["homeCompetitor", "homeTeam", "home"]
+        : ["awayCompetitor", "awayTeam", "away"];
+
+    for (let i = 0; i < names.length; i++) {
+        const team = game[names[i]];
+
+        if (team && typeof team === "object") {
+            const value =
+                team.score != null
+                    ? team.score
+                    : team.currentScore;
+
+            if (value != null) {
+                return normalizeText(value);
+            }
+        }
+    }
+
+    const candidates = side === "home"
+        ? [
+            game.homeScore,
+            game.home_score,
+            game.scoreHome
+        ]
+        : [
+            game.awayScore,
+            game.away_score,
+            game.scoreAway
+        ];
+
+    for (let j = 0; j < candidates.length; j++) {
+        if (candidates[j] != null) {
+            return normalizeText(candidates[j]);
+        }
+    }
+
+    return "";
+}
+
+function getStatus(game) {
+    const statusObj =
+        game.status ||
+        game.gameStatus ||
+        game.statusText ||
+        "";
+
+    if (typeof statusObj === "object") {
+        return normalizeText(
+            statusObj.shortName ||
+            statusObj.name ||
+            statusObj.text ||
+            statusObj.value ||
+            ""
+        );
+    }
+
+    if (statusObj) {
+        return normalizeText(statusObj);
+    }
+
+    const phase =
+        game.gameTime ||
+        game.clock ||
+        game.phase ||
+        "";
+
+    if (phase) {
+        return normalizeText(phase);
+    }
+
+    return "NS";
+}
+
+function getCompetition(game) {
+    return (
+        game.competition ||
+        game.tournament ||
+        game.league ||
+        game.competitionObj ||
+        {}
+    );
+}
+
+function getCompetitionId(game) {
+    const comp = getCompetition(game);
+
+    const value =
+        game.competitionId ||
+        game.tournamentId ||
+        game.leagueId ||
+        getObjectId(comp);
+
+    return normalizeText(value);
+}
+
+function getCompetitionName(game) {
+    const comp = getCompetition(game);
+
+    return (
+        getName(comp) ||
+        normalizeText(
+            game.competitionName ||
+            game.tournamentName ||
+            game.leagueName ||
+            ""
+        )
+    );
+}
+
+function getSport(game) {
+    return (
+        game.sport ||
+        game.sportObj ||
+        game.sportType ||
+        {}
+    );
+}
+
+function getSportId(game) {
+    const sport = getSport(game);
+
+    return normalizeText(
+        game.sportId ||
+        game.sportTypeId ||
+        getObjectId(sport)
+    );
+}
+
+function getSportName(game) {
+    const sport = getSport(game);
+
+    return (
+        getName(sport) ||
+        normalizeText(game.sportName || "")
+    );
+}
+
+function getFixtureId(game) {
+    return normalizeText(
+        game.id ||
+        game.gameId ||
+        game.gameID ||
+        game.fixtureId ||
+        game.eventId ||
+        ""
+    );
+}
+
+function getKickoff(game) {
+    const values = [
+        game.startTime,
+        game.startDate,
+        game.startDateTime,
+        game.dateTime,
+        game.gameDate,
+        game.kickoff,
+        game.date
+    ];
+
+    for (let i = 0; i < values.length; i++) {
+        const value = values[i];
+
+        if (value == null || value === "") {
+            continue;
+        }
+
+        if (typeof value === "number") {
+            const ms = value < 1000000000000
+                ? value * 1000
+                : value;
+
+            const date = new Date(ms);
+
+            if (!isNaN(date.getTime())) {
+                return date;
+            }
+        }
+
+        const date = new Date(value);
+
+        if (!isNaN(date.getTime())) {
+            return date;
+        }
+    }
+
+    return null;
+}
+
+function getGameTeams(game) {
+    const home =
+        game.homeCompetitor ||
+        game.homeTeam ||
+        game.home ||
+        {};
+
+    const away =
+        game.awayCompetitor ||
+        game.awayTeam ||
+        game.away ||
+        {};
+
+    return {
+        home: home,
+        away: away
+    };
 }
 
 function getSelectedParser(settings) {
-return toText(
-settings.selected_parser,
-PROVIDER
-).toLowerCase();
+    return normalizeText(
+        getNestedObject(settings, [
+            "selected_parser"
+        ]) || "parse1"
+    );
 }
 
-function getParserConfig(settings) {
-const selectedParser = getSelectedParser(settings);
+function getApiParser(settings) {
+    const selected = getSelectedParser(settings);
 
-const parseSettings = isObject(settings.parse)    
-    ? settings.parse    
-    : {};    
-
-const parserConfig = isObject(parseSettings[selectedParser])    
-    ? parseSettings[selectedParser]    
-    : {};    
-
-return {    
-    selectedParser: selectedParser,    
-    apiParser: toText(    
-        parserConfig.api_parser,    
-        ""    
-    ).toLowerCase(),    
-    apiUrl: toText(    
-        parserConfig.api_url,    
-        DEFAULT_API_URL    
-    )    
-};
-
+    return normalizeText(
+        getNestedObject(settings, [
+            "parse",
+            selected,
+            "api_parser"
+        ]) || ""
+    ).toLowerCase();
 }
 
-// --------------------------------------------------
-// SELECTED SPORTS
-// --------------------------------------------------
+function is365ScoresParser(settings) {
+    const parser = getApiParser(settings);
 
-function normalizeSportIds(settings) {
-const result = [];
-const seen = {};
-
-function addSport(id, enabled) {    
-    if (!enabled) {    
-        return;    
-    }    
-
-    const sportId = toNumber(id, 0);    
-
-    if (sportId <= 0) {    
-        return;    
-    }    
-
-    const key = String(sportId);    
-
-    if (!seen[key]) {    
-        seen[key] = true;    
-        result.push(sportId);    
-    }    
-}    
-
-const selectedSports = settings.selected_sports;    
-
-if (Array.isArray(selectedSports)) {    
-    selectedSports.forEach(function (item, index) {    
-        if (isObject(item)) {    
-            addSport(    
-                getFirstValue(item.id, item.sportId, item.sport_id),    
-                item.selected !== false &&    
-                item.enabled !== false    
-            );    
-        } else if (item === true || item === 1) {    
-            addSport(index, true);    
-        } else if (typeof item === "number") {    
-            addSport(item, true);    
-        } else if (typeof item === "string") {    
-            if (item.trim() !== "") {    
-                addSport(item, true);    
-            }    
-        }    
-    });    
-} else if (isObject(selectedSports)) {    
-    Object.keys(selectedSports).forEach(function (key) {    
-        const item = selectedSports[key];    
-
-        if (isObject(item)) {    
-            addSport(    
-                getFirstValue(item.id, item.sportId, key),    
-                item.selected !== false &&    
-                item.enabled !== false    
-            );    
-        } else {    
-            addSport(key, normalizeBoolean(item));    
-        }    
-    });    
-}    
-
-// Legacy setting support    
-if (result.length === 0 && settings.selected_sport !== undefined) {    
-    const legacySport = settings.selected_sport;    
-
-    if (isObject(legacySport)) {    
-        Object.keys(legacySport).forEach(function (key) {    
-            addSport(key, normalizeBoolean(legacySport[key]));    
-        });    
-    } else {    
-        addSport(legacySport, true);    
-    }    
-}    
-
-return result;
-
+    return (
+        parser === "365" ||
+        parser === "365scores" ||
+        parser === "365-scores"
+    );
 }
 
-// --------------------------------------------------
-// DATE HELPERS
-// --------------------------------------------------
+function getSelectedSports(settings) {
+    const list = settings.selected_sports;
 
-function getDatePartsInTimeZone(date, timeZone) {
-const parts = new Intl.DateTimeFormat("en-GB", {
-timeZone: timeZone,
-year: "numeric",
-month: "2-digit",
-day: "2-digit"
-}).formatToParts(date);
+    if (Array.isArray(list)) {
+        const hasBoolean = list.some(function (v) {
+            return typeof v === "boolean";
+        });
 
-const result = {};    
+        if (hasBoolean) {
+            const ids = [];
 
-parts.forEach(function (part) {    
-    if (part.type !== "literal") {    
-        result[part.type] = part.value;    
-    }    
-});    
+            list.forEach(function (value, index) {
+                if (value === true) {
+                    ids.push(String(index));
+                }
+            });
 
-return {    
-    year: Number(result.year),    
-    month: Number(result.month),    
-    day: Number(result.day)    
-};
+            return ids;
+        }
 
+        return list
+            .filter(function (v) {
+                return v != null && v !== false;
+            })
+            .map(function (v) {
+                return String(v);
+            });
+    }
+
+    if (list && typeof list === "object") {
+        return Object.keys(list).filter(function (key) {
+            return normalizeBoolean(list[key], false);
+        });
+    }
+
+    const selectedSport = settings.selected_sport;
+
+    if (
+        selectedSport != null &&
+        selectedSport !== ""
+    ) {
+        return [String(selectedSport)];
+    }
+
+    return [];
 }
 
-function getDateOffset(offset) {
-const now = new Date();
-const parts = getDatePartsInTimeZone(now, TIME_ZONE);
+function isSportSelected(game, selectedSports) {
+    if (!selectedSports || selectedSports.length === 0) {
+        return true;
+    }
 
-// Use UTC arithmetic to avoid local machine timezone differences.    
-const date = new Date(Date.UTC(    
-    parts.year,    
-    parts.month - 1,    
-    parts.day + offset    
-));    
+    const id = getSportId(game);
 
-return {    
-    year: date.getUTCFullYear(),    
-    month: date.getUTCMonth() + 1,    
-    day: date.getUTCDate()    
-};
+    if (!id) {
+        return false;
+    }
 
+    return selectedSports.indexOf(String(id)) !== -1;
 }
 
-function formatApiDate(dateParts) {
-const day = String(dateParts.day).padStart(2, "0");
-const month = String(dateParts.month).padStart(2, "0");
-const year = String(dateParts.year);
+async function apiGet(date) {
+    const response = await axios.get(API_URL, {
+        timeout: REQUEST_TIMEOUT,
+        headers: API_HEADERS,
+        params: {
+            startDate: date,
+            endDate: date,
+            lang: "en",
+            timezoneName: TIME_ZONE
+        }
+    });
 
-return day + "/" + month + "/" + year;
+    if (
+        !response ||
+        response.status < 200 ||
+        response.status >= 300
+    ) {
+        throw new Error(
+            "365Scores API returned an unsuccessful response."
+        );
+    }
 
+    return response.data;
 }
 
-function formatIsoDate(dateParts) {
-return String(dateParts.year) + "-" +
-String(dateParts.month).padStart(2, "0") + "-" +
-String(dateParts.day).padStart(2, "0");
+function extractGames(data) {
+    if (Array.isArray(data)) {
+        return data;
+    }
+
+    if (!data || typeof data !== "object") {
+        return [];
+    }
+
+    const possibleArrays = [
+        data.games,
+        data.events,
+        data.fixtures,
+        data.results,
+        data.data,
+        getNestedObject(data, ["games", "items"]),
+        getNestedObject(data, ["data", "games"]),
+        getNestedObject(data, ["data", "events"])
+    ];
+
+    for (let i = 0; i < possibleArrays.length; i++) {
+        if (Array.isArray(possibleArrays[i])) {
+            return possibleArrays[i];
+        }
+    }
+
+    return [];
 }
 
-// --------------------------------------------------
-// API REQUEST
-// --------------------------------------------------
+function convertGame(game, existingMatch) {
+    const teams = getGameTeams(game);
 
-async function requestJson(url) {
-const controller = new AbortController();
+    const homeName = getTeamName(teams.home);
+    const awayName = getTeamName(teams.away);
 
-const timeout = setTimeout(function () {    
-    controller.abort();    
-}, REQUEST_TIMEOUT);    
+    const gameId = getFixtureId(game);
+    const competitionId = getCompetitionId(game);
+    const competitionName = getCompetitionName(game);
+    const sportId = getSportId(game);
 
-try {    
-    const response = await fetch(url, {    
-        method: "GET",    
-        headers: {    
-            "Accept": "application/json",    
-            "User-Agent": "SportsHub/1.0"    
-        },    
-        signal: controller.signal    
-    });    
+    const kickoff = getKickoff(game);
 
-    if (!response.ok) {    
-        throw new Error(    
-            "HTTP " + response.status + " for " + url    
-        );    
-    }    
+    if (!gameId || !homeName || !awayName) {
+        return null;
+    }
 
-    return await response.json();    
-} finally {    
-    clearTimeout(timeout);    
+    const homeScore = getScore(game, "home");
+    const awayScore = getScore(game, "away");
+
+    let score = "-";
+
+    if (homeScore !== "" || awayScore !== "") {
+        score =
+            (homeScore === "" ? "0" : homeScore) +
+            " - " +
+            (awayScore === "" ? "0" : awayScore);
+    }
+
+    const status = getStatus(game);
+
+    const date = kickoff
+        ? getDateString(kickoff)
+        : "";
+
+    let time = "";
+
+    if (kickoff) {
+        time = new Intl.DateTimeFormat("en-GB", {
+            timeZone: TIME_ZONE,
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+        }).format(kickoff);
+    }
+
+    const old = existingMatch || {};
+
+    const homeLogo =
+        getTeamLogo(teams.home) ||
+        old.homeLogo ||
+        "";
+
+    const awayLogo =
+        getTeamLogo(teams.away) ||
+        old.awayLogo ||
+        "";
+
+    /*
+     * Start from the existing record to preserve admin fields:
+     * streamUrl, goalEvents, stadium, channels, adminNotes, etc.
+     */
+    const match = Object.assign({}, old, {
+        gameId: gameId,
+        apiFixtureId: gameId,
+        apiProvider: PROVIDER,
+
+        competitionId: competitionId,
+        sportId: sportId,
+
+        home: homeName,
+        away: awayName,
+
+        homeLogo: homeLogo,
+        awayLogo: awayLogo,
+
+        league:
+            competitionName ||
+            old.league ||
+            "Unknown Competition",
+
+        date: date || old.date || "",
+        time: time || old.time || "",
+
+        score: score === "-" && old.score
+            ? old.score
+            : score,
+
+        status: status || old.status || "NS",
+        shortStatus: status || old.shortStatus || "NS",
+
+        timestamp: kickoff
+            ? kickoff.getTime()
+            : (old.timestamp || getTimestamp()),
+
+        matchTimeMillis: kickoff
+            ? kickoff.getTime()
+            : (old.matchTimeMillis || 0)
+    });
+
+    return {
+        id: gameId,
+        competitionId: competitionId,
+        competitionName: competitionName,
+        sportId: sportId,
+        sportName: getSportName(game),
+        match: match
+    };
 }
 
+function getFirebaseAdmin() {
+    if (!FIREBASE_SERVICE_ACCOUNT) {
+        throw new Error(
+            "Missing FIREBASE_SERVICE_ACCOUNT secret."
+        );
+    }
+
+    if (!FIREBASE_DATABASE_URL) {
+        throw new Error(
+            "Missing FIREBASE_DATABASE_URL secret."
+        );
+    }
+
+    if (!admin.apps.length) {
+        let serviceAccount;
+
+        try {
+            serviceAccount = JSON.parse(
+                FIREBASE_SERVICE_ACCOUNT
+            );
+        } catch (error) {
+            throw new Error(
+                "FIREBASE_SERVICE_ACCOUNT is not valid JSON."
+            );
+        }
+
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+            databaseURL: FIREBASE_DATABASE_URL
+        });
+    }
+
+    return admin.database();
 }
 
-function buildUrl(baseUrl, params) {
-const url = new URL(baseUrl);
+async function ensureBaseNodes(db) {
+    const rootRef = db.ref();
 
-Object.keys(params).forEach(function (key) {    
-    const value = params[key];    
+    const snapshot = await rootRef.once("value");
+    const root = snapshot.val() || {};
 
-    if (    
-        value !== undefined &&    
-        value !== null &&    
-        value !== ""    
-    ) {    
-        url.searchParams.set(key, String(value));    
-    }    
-});    
+    const updates = {};
 
-return url.toString();
+    /*
+     * Create settings only if absent.
+     * Never replace an existing settings node.
+     */
+    if (
+        !root.settings ||
+        typeof root.settings !== "object"
+    ) {
+        updates["settings"] = {
+            selected_parser: "parse1",
+            selected_sport: 1,
+            selected_sports: [null, true],
+            parse: {
+                parse1: {
+                    api_parser: "365",
+                    api_url: API_URL,
+                    game_api_url:
+                        "https://webws.365scores.com/web/game/?gameId={gameId}"
+                }
+            }
+        };
+    } else {
+        const settings = root.settings;
 
+        if (!settings.selected_parser) {
+            updates["settings/selected_parser"] = "parse1";
+        }
+
+        const parserName = settings.selected_parser || "parse1";
+
+        if (
+            !settings.parse ||
+            typeof settings.parse !== "object"
+        ) {
+            updates["settings/parse"] = {};
+        }
+
+        const parserSettings =
+            settings.parse &&
+            settings.parse[parserName];
+
+        if (
+            !parserSettings ||
+            typeof parserSettings !== "object"
+        ) {
+            updates["settings/parse/" + parserName] = {
+                api_parser: "365",
+                api_url: API_URL,
+                game_api_url:
+                    "https://webws.365scores.com/web/game/?gameId={gameId}"
+            };
+        } else {
+            if (!parserSettings.api_parser) {
+                updates[
+                    "settings/parse/" +
+                    parserName +
+                    "/api_parser"
+                ] = "365";
+            }
+
+            if (!parserSettings.api_url) {
+                updates[
+                    "settings/parse/" +
+                    parserName +
+                    "/api_url"
+                ] = API_URL;
+            }
+        }
+    }
+
+    /*
+     * Create sports node only if absent.
+     * Existing sports entries are never overwritten.
+     */
+    if (
+        !root.sports ||
+        typeof root.sports !== "object"
+    ) {
+        updates["sports"] = DEFAULT_SPORTS;
+    }
+
+    if (
+        !root.competitions ||
+        typeof root.competitions !== "object"
+    ) {
+        updates["competitions"] = {};
+    }
+
+    if (
+        !root.competition_selection ||
+        typeof root.competition_selection !== "object"
+    ) {
+        updates["competition_selection"] = {};
+    }
+
+    if (
+        !root.matches ||
+        typeof root.matches !== "object"
+    ) {
+        updates["matches"] = {};
+    }
+
+    if (
+        !root.syncSettings ||
+        typeof root.syncSettings !== "object"
+    ) {
+        updates["syncSettings"] = {
+            autoSyncEnabled: true,
+            syncIntervalMinutes: 5,
+            lastSuccessfulSync: 0
+        };
+    }
+
+    if (Object.keys(updates).length > 0) {
+        await rootRef.update(updates);
+        console.log(
+            "Created missing Firebase nodes:",
+            Object.keys(updates).join(", ")
+        );
+    }
+
+    const settingsSnapshot =
+        await db.ref("settings").once("value");
+
+    return settingsSnapshot.val() || {};
 }
 
-// --------------------------------------------------
-// FETCH SPORTS AND COMPETITIONS
-// --------------------------------------------------
+async function loadCompetitionSelections(db) {
+    const snapshot = await db
+        .ref("competition_selection")
+        .once("value");
 
-async function fetchSportsAndCompetitions(apiUrl) {
-const url = buildUrl(apiUrl, {
-lang: "en",
-timezoneName: TIME_ZONE
-});
+    const data = snapshot.val() || {};
+    const selections = {};
 
-console.log("Fetching sports and competitions catalog...");    
+    Object.keys(data).forEach(function (id) {
+        selections[String(id)] = normalizeBoolean(
+            data[id],
+            false
+        );
+    });
 
-const data = await requestJson(url);    
-
-if (!data || !Array.isArray(data.sports)) {    
-    throw new Error(    
-        "365Scores response does not contain a valid sports array"    
-    );    
-}    
-
-if (!Array.isArray(data.competitions)) {    
-    throw new Error(    
-        "365Scores response does not contain a valid competitions array"    
-    );    
-}    
-
-return {    
-    sports: data.sports,    
-    competitions: data.competitions    
-};
-
+    return selections;
 }
 
-// --------------------------------------------------
-// COMPETITION HELPERS
-// --------------------------------------------------
-
-function getCompetitionId(competition) {
-return toNumber(
-getFirstValue(
-competition.id,
-competition.competitionId,
-competition.competition_id
-),
-0
-);
-}
-
-function getSportId(item) {
-return toNumber(
-getFirstValue(
-item.sportId,
-item.sport_id,
-item.sport && item.sport.id
-),
-0
-);
-}
-
-function getCompetitionName(competition) {
-return toText(
-getFirstValue(
-competition.name,
-competition.shortName,
-competition.displayName
-),
-"Unknown Competition"
-);
-}
-
-function getSportName(sport) {
-return toText(
-getFirstValue(
-sport.name,
-sport.shortName,
-sport.displayName
-),
-"Unknown Sport"
-);
-}
-
-function getCompetitionLogo(competition) {
-const directLogo = getFirstValue(
-competition.logo,
-competition.image,
-competition.imageUrl,
-competition.logoUrl
-);
-
-if (directLogo) {    
-    return String(directLogo);    
-}    
-
-const imageId = getFirstValue(    
-    competition.imageId,    
-    competition.image_id    
-);    
-
-if (imageId) {    
-    return IMAGE_URL + "competitors/" + imageId;    
-}    
-
-return "";
-
-}
-
-function getSportLogo(sport) {
-return toText(
-getFirstValue(
-sport.logo,
-sport.image,
-sport.imageUrl
-),
-""
-);
-}
-
-// --------------------------------------------------
-// PRESERVE COMPETITION SELECTION
-// --------------------------------------------------
-
-async function saveSportsAndCompetitions(
-sports,
-competitions,
-selectedSportIds
+function isCompetitionSelected(
+    competitionId,
+    selections,
+    competitions
 ) {
-const sportUpdates = {};
-const competitionUpdates = {};
+    const id = String(competitionId || "");
 
-const oldSportsSnapshot = await db.ref("sports").once("value");    
-const oldCompetitionsSnapshot = await db.ref("competitions").once("value");    
-const selectionSnapshot = await db.ref("competition_selection").once("value");    
+    if (!id) {
+        return false;
+    }
 
-const oldSports = oldSportsSnapshot.val() || {};    
-const oldCompetitions = oldCompetitionsSnapshot.val() || {};    
-const selections = selectionSnapshot.val() || {};    
+    if (
+        Object.prototype.hasOwnProperty.call(
+            selections,
+            id
+        )
+    ) {
+        return selections[id] === true;
+    }
 
-const selectedSportMap = {};    
+    const competition =
+        competitions &&
+        competitions[id];
 
-selectedSportIds.forEach(function (id) {    
-    selectedSportMap[String(id)] = true;    
-});    
+    if (competition) {
+        return normalizeBoolean(
+            competition.selected,
+            false
+        );
+    }
 
-const validSportMap = {};    
-
-sports.forEach(function (sport) {    
-    const sportId = toNumber(sport.id, 0);    
-
-    if (sportId <= 0) {    
-        return;    
-    }    
-
-    const key = String(sportId);    
-    const oldSport = oldSports[key] || {};    
-
-    validSportMap[key] = true;    
-
-    sportUpdates[key] = Object.assign({}, oldSport, {    
-        id: sportId,    
-        name: getSportName(sport),    
-        logo: getSportLogo(sport),    
-        selected: !!selectedSportMap[key],    
-        apiProvider: PROVIDER,    
-        updatedAt: Date.now()    
-    });    
-});    
-
-const validCompetitionMap = {};    
-
-competitions.forEach(function (competition) {    
-    const competitionId = getCompetitionId(competition);    
-
-    if (competitionId <= 0) {    
-        return;    
-    }    
-
-    const key = String(competitionId);    
-    const sportId = getSportId(competition);    
-    const oldCompetition = oldCompetitions[key] || {};    
-
-    const selectionExists = Object.prototype.hasOwnProperty.call(    
-        selections,    
-        key    
-    );    
-
-    // Existing selection always wins.    
-    const selected = selectionExists    
-        ? normalizeBoolean(selections[key])    
-        : normalizeBoolean(oldCompetition.selected);    
-
-    validCompetitionMap[key] = true;    
-
-    const sport = sports.find(function (item) {    
-        return Number(item.id) === sportId;    
-    });    
-
-    competitionUpdates[key] = Object.assign({}, oldCompetition, {    
-        id: competitionId,    
-        competitionId: competitionId,    
-        sportId: sportId,    
-        sportName: sport ? getSportName(sport) : "",    
-        name: getCompetitionName(competition),    
-        logo: getCompetitionLogo(competition),    
-        selected: selected,    
-        apiProvider: PROVIDER,    
-        updatedAt: Date.now()    
-    });    
-
-    // Do not replace existing admin selection.    
-    // Initialize selection only when no entry exists.    
-    if (!selectionExists) {    
-        selectionSnapshot.ref.child(key).set(selected).catch(function (error) {    
-            console.error(    
-                "Could not initialize selection for competition",    
-                key,    
-                error.message    
-            );    
-        });    
-    }    
-});    
-
-// Merge instead of replacing whole branches.    
-if (Object.keys(sportUpdates).length > 0) {    
-    await db.ref("sports").update(sportUpdates);    
-}    
-
-if (Object.keys(competitionUpdates).length > 0) {    
-    await db.ref("competitions").update(competitionUpdates);    
-}    
-
-console.log(    
-    "Sports catalog updated:",    
-    Object.keys(sportUpdates).length    
-);    
-
-console.log(    
-    "Competitions catalog updated:",    
-    Object.keys(competitionUpdates).length    
-);    
-
-return {    
-    oldCompetitions: oldCompetitions,    
-    selections: selections,    
-    validCompetitionMap: validCompetitionMap,    
-    validSportMap: validSportMap    
-};
-
+    return false;
 }
 
-// --------------------------------------------------
-// MATCH STATUS
-// --------------------------------------------------
+async function ensureCompetitionRecords(db, records) {
+    const compRef = db.ref("competitions");
+    const selectionRef = db.ref("competition_selection");
 
-function getMatchStatus(game) {
-const statusObject = isObject(game.status)
-? game.status
-: {};
+    const compSnapshot = await compRef.once("value");
+    const selectionSnapshot = await selectionRef.once("value");
 
-const statusText = toText(    
-    getFirstValue(    
-        statusObject.text,    
-        statusObject.name,    
-        statusObject.shortName,    
-        game.statusText,    
-        game.statusName,    
-        typeof game.status === "string" ? game.status : null,    
-        game.gameStatus    
-    ),    
-    ""    
-).trim();    
+    const existingCompetitions = compSnapshot.val() || {};
+    const existingSelections = selectionSnapshot.val() || {};
 
-const statusCode = toText(    
-    getFirstValue(    
-        statusObject.code,    
-        statusObject.id,    
-        game.statusCode,    
-        game.statusId,    
-        game.gameStatusCode    
-    ),    
-    ""    
-).toUpperCase();    
+    const updates = {};
 
-const combined = (statusText + " " + statusCode).toUpperCase();    
+    records.forEach(function (record) {
+        const id = cleanKey(record.competitionId);
 
-if (    
-    /\bFT\b|\bAET\b|\bPEN\b|FINISHED|ENDED|FULL TIME/.test(combined)    
-) {    
-    return {    
-        status: "FT",    
-        shortStatus: "FT",    
-        live: false    
-    };    
-}    
+        if (!id) {
+            return;
+        }
 
-if (    
-    /\bCANC\b|CANCELLED|CANCELED/.test(combined)    
-) {    
-    return {    
-        status: "CANC",    
-        shortStatus: "CANC",    
-        live: false    
-    };    
-}    
+        const old =
+            existingCompetitions[id] || {};
 
-if (    
-    /\bPOSTP\b|POSTPONED/.test(combined)    
-) {    
-    return {    
-        status: "PPD",    
-        shortStatus: "PPD",    
-        live: false    
-    };    
-}    
+        const selected = normalizeBoolean(
+            old.selected,
+            normalizeBoolean(
+                existingSelections[id],
+                false
+            )
+        );
 
-if (    
-    /\bABD\b|ABANDONED/.test(combined)    
-) {    
-    return {    
-        status: "ABD",    
-        shortStatus: "ABD",    
-        live: false    
-    };    
-}    
+        const comp = Object.assign({}, old, {
+            id: record.competitionId,
+            name:
+                record.competitionName ||
+                old.name ||
+                "Unknown Competition",
+            selected: selected,
+            sportId:
+                record.sportId ||
+                old.sportId ||
+                ""
+        });
 
-if (    
-    /\bHT\b|HALF TIME|HALFTIME/.test(combined)    
-) {    
-    return {    
-        status: "HT",    
-        shortStatus: "HT",    
-        live: true    
-    };    
-}    
+        updates["competitions/" + id] = comp;
 
-if (    
-    /\b1H\b|FIRST HALF|1ST HALF/.test(combined)    
-) {    
-    return {    
-        status: "1H",    
-        shortStatus: "LIVE",    
-        live: true    
-    };    
-}    
+        /*
+         * Only initialize a missing selection.
+         * Never overwrite a user's true/false choice.
+         */
+        if (
+            !Object.prototype.hasOwnProperty.call(
+                existingSelections,
+                id
+            )
+        ) {
+            updates["competition_selection/" + id] =
+                selected;
+        }
+    });
 
-if (    
-    /\b2H\b|SECOND HALF|2ND HALF/.test(combined)    
-) {    
-    return {    
-        status: "2H",    
-        shortStatus: "LIVE",    
-        live: true    
-    };    
-}    
+    if (Object.keys(updates).length > 0) {
+        await db.ref().update(updates);
+    }
 
-if (    
-    /\bET\b|EXTRA TIME/.test(combined)    
-) {    
-    return {    
-        status: "ET",    
-        shortStatus: "LIVE",    
-        live: true    
-    };    
-}    
+    const freshCompetitions = await compRef.once("value");
+    const freshSelections = await selectionRef.once("value");
 
-if (    
-    /\bLIVE\b|\bIN PLAY\b|\bINPLAY\b|\bPLAYING\b|\bQ[1-4]\b|\bOT\b/.test(combined)    
-) {    
-    return {    
-        status: statusText || "LIVE",    
-        shortStatus: "LIVE",    
-        live: true    
-    };    
-}    
-
-const gameTime = getFirstValue(    
-    game.gameTime,    
-    game.time,    
-    game.startTime    
-);    
-
-const timestamp = getTimestamp(    
-    getFirstValue(    
-        game.startTime,    
-        game.startDate,    
-        game.date,    
-        game.gameDate    
-    )    
-);    
-
-if (timestamp > 0 && timestamp < Date.now()) {    
-    // Avoid automatically calling every past kickoff a finished match.    
-    // The API status is authoritative when available.    
-    if (!statusText && !statusCode) {    
-        return {    
-            status: "UNKNOWN",    
-            shortStatus: "UNKNOWN",    
-            live: false    
-        };    
-    }    
-}    
-
-if (gameTime !== null) {    
-    const timeText = String(gameTime).toUpperCase();    
-
-    if (timeText.indexOf("'") !== -1 || /^\d+$/.test(timeText)) {    
-        return {    
-            status: timeText,    
-            shortStatus: "LIVE",    
-            live: true    
-        };    
-    }    
-}    
-
-return {    
-    status: statusText || "NS",    
-    shortStatus: "NS",    
-    live: false    
-};
-
+    return {
+        competitions: freshCompetitions.val() || {},
+        selections: freshSelections.val() || {}
+    };
 }
 
-// --------------------------------------------------
-// TEAM HELPERS
-// --------------------------------------------------
+async function ensureNewSports(db, records) {
+    const snapshot = await db.ref("sports").once("value");
+    const sports = snapshot.val() || {};
+    const updates = {};
 
-function getTeamObject(game, side) {
-const first = side === "home"
-? getFirstValue(game.homeCompetitor, game.homeTeam, game.home)
-: getFirstValue(game.awayCompetitor, game.awayTeam, game.away);
+    records.forEach(function (record) {
+        const sportId = normalizeText(record.sportId);
+        const sportName = normalizeText(record.sportName);
 
-return isObject(first) ? first : {};
+        if (!sportId || !sportName) {
+            return;
+        }
 
+        /*
+         * Do not invent/replace existing sport IDs.
+         * Use a zero-padded key for a genuinely missing sport.
+         */
+        const key = sportId.length < 2
+            ? "0" + sportId
+            : sportId;
+
+        if (
+            !Object.prototype.hasOwnProperty.call(
+                sports,
+                key
+            )
+        ) {
+            updates["sports/" + key] = {
+                id: sportId,
+                name: sportName
+            };
+        }
+    });
+
+    if (Object.keys(updates).length > 0) {
+        await db.ref().update(updates);
+    }
 }
 
-function getTeamName(game, side) {
-const team = getTeamObject(game, side);
+async function main() {
+    console.log("====================================");
+    console.log("Sports Hub 365Scores Sync");
+    console.log("====================================");
 
-return toText(    
-    getFirstValue(    
-        team.name,    
-        team.shortName,    
-        team.displayName,    
-        team.title,    
-        side === "home" ? game.homeCompetitorName : game.awayCompetitorName,    
-        side === "home" ? game.homeTeamName : game.awayTeamName    
-    ),    
-    side === "home" ? "Home" : "Away"    
-);
+    const db = getFirebaseAdmin();
 
+    const settings = await ensureBaseNodes(db);
+
+    if (!is365ScoresParser(settings)) {
+        console.log(
+            "Warning: settings parser is not configured as 365Scores."
+        );
+
+        console.log(
+            "The script will continue using the 365Scores endpoint."
+        );
+    }
+
+    const selectedSports = getSelectedSports(settings);
+
+    console.log(
+        "Selected sports:",
+        selectedSports.length
+            ? selectedSports.join(", ")
+            : "All sports"
+    );
+
+    const dates = getDateRange();
+
+    console.log("Dates:", dates.join(", "));
+
+    const allGames = [];
+    const seenGameIds = {};
+
+    /*
+     * Fetch every configured date.
+     * If an API request fails, stop before changing match records.
+     */
+    for (let i = 0; i < dates.length; i++) {
+        const date = dates[i];
+
+        console.log("Fetching date:", date);
+
+        const data = await apiGet(date);
+        const games = extractGames(data);
+
+        console.log(
+            "Games returned for",
+            date + ":",
+            games.length
+        );
+
+        games.forEach(function (game) {
+            const id = getFixtureId(game);
+
+            if (!id || seenGameIds[id]) {
+                return;
+            }
+
+            seenGameIds[id] = true;
+            allGames.push(game);
+        });
+
+        await sleep(REQUEST_DELAY);
+    }
+
+    if (allGames.length === 0) {
+        console.log(
+            "No games returned. Existing matches are unchanged."
+        );
+
+        return;
+    }
+
+    console.log(
+        "Unique games fetched:",
+        allGames.length
+    );
+
+    /*
+     * Convert all valid games first.
+     */
+    const records = [];
+
+    allGames.forEach(function (game) {
+        if (!isSportSelected(game, selectedSports)) {
+            return;
+        }
+
+        const converted = convertGame(game, null);
+
+        if (!converted) {
+            return;
+        }
+
+        records.push(converted);
+    });
+
+    if (records.length === 0) {
+        console.log(
+            "No valid games after filtering. Existing matches are unchanged."
+        );
+
+        return;
+    }
+
+    /*
+     * Create competition records for all valid fetched games,
+     * including competitions not yet selected by the admin.
+     */
+    await ensureNewSports(db, records);
+
+    const compResult =
+        await ensureCompetitionRecords(db, records);
+
+    const competitions = compResult.competitions;
+    const selections = {};
+
+    Object.keys(compResult.selections).forEach(function (id) {
+        selections[id] = normalizeBoolean(
+            compResult.selections[id],
+            false
+        );
+    });
+
+    /*
+     * Only selected competitions can contribute matches.
+     */
+    const selectedRecords = records.filter(function (record) {
+        const id = cleanKey(record.competitionId);
+
+        return isCompetitionSelected(
+            id,
+            selections,
+            competitions
+        );
+    });
+
+    console.log(
+        "Valid games:",
+        records.length
+    );
+
+    console.log(
+        "Games in selected competitions:",
+        selectedRecords.length
+    );
+
+    if (selectedRecords.length === 0) {
+        console.log(
+            "No matches belong to selected competitions."
+        );
+
+        console.log(
+            "Competition records were updated; existing matches were preserved."
+        );
+
+        return;
+    }
+
+    const matchesRef = db.ref("matches");
+    const matchesSnapshot = await matchesRef.once("value");
+    const existingMatches = matchesSnapshot.val() || {};
+
+    const updates = {};
+    let savedCount = 0;
+
+    selectedRecords.forEach(function (record) {
+        const id = cleanKey(record.id);
+
+        if (!id) {
+            return;
+        }
+
+        const existing = existingMatches[id] || {};
+
+        /*
+         * Preserve admin-controlled values by merging old data.
+         */
+        const match = convertGame(
+            allGames.find(function (game) {
+                return getFixtureId(game) === record.id;
+            }) || {},
+            existing
+        );
+
+        if (!match) {
+            return;
+        }
+
+        updates["matches/" + id] = match.match;
+        savedCount++;
+    });
+
+    if (savedCount === 0) {
+        console.log(
+            "No matches were prepared for saving."
+        );
+
+        return;
+    }
+
+    /*
+     * A multi-path update changes only the listed match records.
+     * It does not delete old matches or unrelated Firebase data.
+     */
+    await db.ref().update(updates);
+
+    const successfulTime = getTimestamp();
+
+    await db.ref("syncSettings").update({
+        lastSuccessfulSync: successfulTime,
+        lastSyncProvider: PROVIDER,
+        lastSyncStatus: "success",
+        lastSyncGamesFetched: allGames.length,
+        lastSyncMatchesSaved: savedCount
+    });
+
+    console.log("====================================");
+    console.log("Sync completed successfully.");
+    console.log("Provider:", PROVIDER);
+    console.log("Games fetched:", allGames.length);
+    console.log("Valid games:", records.length);
+    console.log("Matches saved:", savedCount);
+    console.log("====================================");
 }
 
-function getTeamId(game, side) {
-const team = getTeamObject(game, side);
-
-return toText(    
-    getFirstValue(    
-        team.id,    
-        team.competitorId,    
-        team.teamId,    
-        side === "home" ? game.homeCompetitorId : game.awayCompetitorId,    
-        side === "home" ? game.homeTeamId : game.awayTeamId    
-    ),    
-    ""    
-);
-
-}
-
-function getTeamLogo(game, side, oldMatch) {
-const team = getTeamObject(game, side);
-
-const directLogo = getFirstValue(    
-    team.logo,    
-    team.image,    
-    team.imageUrl,    
-    team.logoUrl,    
-    team.imagePath    
-);    
-
-if (directLogo) {    
-    return String(directLogo);    
-}    
-
-const imageId = getFirstValue(    
-    team.imageId,    
-    team.image_id    
-);    
-
-if (imageId) {    
-    return IMAGE_URL + "competitors/" + imageId;    
-}    
-
-const oldLogo = side === "home"    
-    ? getFirstValue(oldMatch.homeLogo, oldMatch.homeTeamLogo)    
-    : getFirstValue(oldMatch.awayLogo, oldMatch.awayTeamLogo);    
-
-return toText(oldLogo, "");
-
-}
-
-// --------------------------------------------------
-// SCORE HELPERS
-// --------------------------------------------------
-
-function getScore(game, side) {
-const team = getTeamObject(game, side);
-
-const directScore = getFirstValue(    
-    team.score,    
-    team.currentScore,    
-    team.goals,    
-    side === "home" ? game.homeScore : game.awayScore,    
-    side === "home" ? game.homeCompetitorScore : game.awayCompetitorScore    
-);    
-
-if (directScore === null) {    
-    return 0;    
-}    
-
-const score = Number(directScore);    
-
-return Number.isFinite(score) ? score : 0;
-
-}
-
-// --------------------------------------------------
-// MATCH CONVERSION
-// --------------------------------------------------
-
-function convertMatch(game, oldMatch, selectedCompetitionMap) {
-const matchId = toText(
-getFirstValue(game.id, game.gameId, game.fixtureId),
-""
-);
-
-if (!matchId) {    
-    return null;    
-}    
-
-const competitionId = toNumber(    
-    getFirstValue(    
-        game.competitionId,    
-        game.competition && game.competition.id    
-    ),    
-    0    
-);    
-
-const sportId = getSportId(game);    
-
-const homeTeam = getTeamName(game, "home");    
-const awayTeam = getTeamName(game, "away");    
-
-const homeScore = getScore(game, "home");    
-const awayScore = getScore(game, "away");    
-
-const statusInfo = getMatchStatus(game);    
-
-const dateSource = getFirstValue(    
-    game.startDate,    
-    game.startTime,    
-    game.date,    
-    game.gameDate,    
-    game.startTimestamp,    
-    game.timestamp    
-);    
-
-const matchTimeMillis = getTimestamp(dateSource);    
-
-const timestamp = matchTimeMillis > 0    
-    ? matchTimeMillis    
-    : Date.now();    
-
-const competitionObject = isObject(game.competition)    
-    ? game.competition    
-    : {};    
-
-const competitionName = toText(    
-    getFirstValue(    
-        competitionObject.name,    
-        competitionObject.shortName,    
-        game.competitionName,    
-        game.leagueName    
-    ),    
-    "Unknown Competition"    
-);    
-
-const competitionSelected = !!selectedCompetitionMap[    
-    String(competitionId)    
-];    
-
-const elapsed = getFirstValue(    
-    game.gameTime,    
-    game.elapsed,    
-    game.minute,    
-    game.matchTime    
-);    
-
-const homeLogo = getTeamLogo(game, "home", oldMatch);    
-const awayLogo = getTeamLogo(game, "away", oldMatch);    
-
-const apiMatch = Object.assign({}, oldMatch, {    
-    gameId: matchId,    
-    apiFixtureId: matchId,    
-    apiProvider: PROVIDER,    
-
-    sportId: sportId,    
-    competitionId: competitionId,    
-
-    competition: competitionName,    
-    league: competitionName,    
-    competitionName: competitionName,    
-
-    home: homeTeam,    
-    away: awayTeam,    
-    homeTeam: homeTeam,    
-    awayTeam: awayTeam,    
-
-    homeTeamId: getTeamId(game, "home"),    
-    awayTeamId: getTeamId(game, "away"),    
-
-    homeScore: homeScore,    
-    awayScore: awayScore,    
-
-    homeLogo: homeLogo,    
-    awayLogo: awayLogo,    
-    homeTeamLogo: homeLogo,    
-    awayTeamLogo: awayLogo,    
-
-    status: statusInfo.status,    
-    shortStatus: statusInfo.shortStatus,    
-    isLive: statusInfo.live,    
-
-    elapsed: elapsed === null ? "" : String(elapsed),    
-
-    timestamp: timestamp,    
-    matchTimeMillis: matchTimeMillis,    
-
-    date: matchTimeMillis > 0    
-        ? new Date(matchTimeMillis).toISOString()    
-        : "",    
-
-    competitionSelected: competitionSelected,    
-
-    updatedAt: Date.now()    
-});    
-
-// Preserve admin-managed values if the API doesn't supply them.    
-apiMatch.streamUrl = toText(    
-    getFirstValue(game.streamUrl, oldMatch.streamUrl),    
-    ""    
-);    
-
-apiMatch.goalEvents = getFirstValue(    
-    game.goalEvents,    
-    oldMatch.goalEvents,    
-    []    
-);    
-
-apiMatch.adminNotes = toText(oldMatch.adminNotes, "");    
-
-apiMatch.stadium = toText(    
-    getFirstValue(    
-        game.stadium,    
-        game.venue,    
-        oldMatch.stadium    
-    ),    
-    ""    
-);    
-
-apiMatch.channels = getFirstValue(    
-    oldMatch.channels,    
-    game.channels,    
-    []    
-);    
-
-return apiMatch;
-
-}
-
-// --------------------------------------------------
-// FETCH GAMES FOR ONE SPORT AND ONE DATE
-// --------------------------------------------------
-
-async function fetchGamesForDate(apiUrl, sportId, dateParts) {
-const params = {
-lang: "en",
-timezoneName: TIME_ZONE,
-startDate: formatApiDate(dateParts),
-endDate: formatApiDate(dateParts),
-sportId: sportId,
-onlyMajorGames: "false"
-};
-
-const url = buildUrl(apiUrl, params);    
-
-console.log(    
-    "Fetching 365Scores games:",    
-    "sport=" + sportId,    
-    "date=" + formatApiDate(dateParts)    
-);    
-
-const data = await requestJson(url);    
-
-if (!data || !Array.isArray(data.games)) {    
-    throw new Error(    
-        "365Scores response does not contain a valid games array " +    
-        "(sport=" + sportId +    
-        ", date=" + formatApiDate(dateParts) + ")"    
-    );    
-}    
-
-return data.games;
-
-}
-
-// --------------------------------------------------
-// MAIN SYNC
-// --------------------------------------------------
-
-async function sync365Scores() {
-initializeFirebase();
-
-const settings = await getSettings();    
-const parserConfig = getParserConfig(settings);    
-
-if (    
-    parserConfig.selectedParser !== PROVIDER &&    
-    parserConfig.apiParser !== PROVIDER    
-) {    
-    console.log(    
-        "365Scores sync skipped. Selected parser:",    
-        parserConfig.selectedParser,    
-        "API parser:",    
-        parserConfig.apiParser    
-    );    
-
-    return;    
-}    
-
-const selectedSportIds = normalizeSportIds(settings);    
-
-if (selectedSportIds.length === 0) {    
-    console.log(    
-        "No selected sports found in settings/selected_sports."    
-    );    
-
-    return;    
-}    
-
-const apiUrl = parserConfig.apiUrl || DEFAULT_API_URL;    
-
-console.log("----------------------------------------");    
-console.log("Sports Hub 365Scores Sync");    
-console.log("Selected sports:", selectedSportIds.join(", "));    
-console.log("API URL:", apiUrl);    
-console.log("----------------------------------------");    
-
-// Fetch catalog first. If this fails, do not modify matches.    
-const catalog = await fetchSportsAndCompetitions(apiUrl);    
-
-const catalogInfo = await saveSportsAndCompetitions(    
-    catalog.sports,    
-    catalog.competitions,    
-    selectedSportIds    
-);    
-
-const selectedSportMap = {};    
-
-selectedSportIds.forEach(function (id) {    
-    selectedSportMap[String(id)] = true;    
-});    
-
-// Use the existing Admin App selection as the source of truth.    
-const selectionSnapshot = await db.ref(    
-    "competition_selection"    
-).once("value");    
-
-const rawSelections = selectionSnapshot.val() || {};    
-
-const selectedCompetitionMap = {};    
-
-catalog.competitions.forEach(function (competition) {    
-    const competitionId = getCompetitionId(competition);    
-
-    if (competitionId <= 0) {    
-        return;    
-    }    
-
-    const key = String(competitionId);    
-
-    if (Object.prototype.hasOwnProperty.call(rawSelections, key)) {    
-        selectedCompetitionMap[key] = normalizeBoolean(    
-            rawSelections[key]    
-        );    
-    } else {    
-        const oldCompetition = catalogInfo.oldCompetitions[key] || {};    
-
-        selectedCompetitionMap[key] = normalizeBoolean(    
-            oldCompetition.selected    
-        );    
-    }    
-});    
-
-const dates = [    
-    getDateOffset(-1),    
-    getDateOffset(0),    
-    getDateOffset(1)    
-];    
-
-const allGames = {};    
-const requestErrors = [];    
-
-let expectedRequests = 0;    
-let successfulRequests = 0;    
-
-for (let s = 0; s < selectedSportIds.length; s++) {    
-    const sportId = selectedSportIds[s];    
-
-    for (let d = 0; d < dates.length; d++) {    
-        expectedRequests++;    
-
-        try {    
-            const games = await fetchGamesForDate(    
-                apiUrl,    
-                sportId,    
-                dates[d]    
-            );    
-
-            successfulRequests++;    
-
-            games.forEach(function (game) {    
-                const id = getFirstValue(    
-                    game.id,    
-                    game.gameId,    
-                    game.fixtureId    
-                );    
-
-                if (id === null) {    
-                    return;    
-                }    
-
-                const key = cleanKey(id);    
-
-                // Deduplicate the same game returned by multiple requests.    
-                allGames[key] = game;    
-            });    
-        } catch (error) {    
-            const message =    
-                "sport=" + sportId +    
-                ", date=" + formatApiDate(dates[d]) +    
-                ": " + error.message;    
-
-            requestErrors.push(message);    
-
-            console.error("365Scores request failed:", message);    
-        }    
-
-        await sleep(REQUEST_DELAY);    
-    }    
-}    
-
-console.log("Expected requests:", expectedRequests);    
-console.log("Successful requests:", successfulRequests);    
-console.log("Failed requests:", requestErrors.length);    
-console.log("Unique games received:", Object.keys(allGames).length);    
-
-if (successfulRequests === 0) {    
-    throw new Error(    
-        "All 365Scores game requests failed. Existing matches were not changed."    
-    );    
-}    
-
-const oldMatchesSnapshot = await db.ref("matches").once("value");    
-const oldMatches = oldMatchesSnapshot.val() || {};    
-
-const matchUpdates = {};    
-
-let totalPrepared = 0;    
-let selectedLeagueMatches = 0;    
-let unselectedLeagueMatches = 0;    
-let footballMatchesPrepared = 0;    
-
-Object.keys(allGames).forEach(function (key) {    
-    const game = allGames[key];    
-
-    const id = toText(    
-        getFirstValue(game.id, game.gameId, game.fixtureId),    
-        ""    
-    );    
-
-    if (!id) {    
-        return;    
-    }    
-
-    const firebaseKey = cleanKey(id);    
-    const oldMatch = oldMatches[firebaseKey] || {};    
-
-    const match = convertMatch(    
-        game,    
-        oldMatch,    
-        selectedCompetitionMap    
-    );    
-
-    if (!match) {    
-        return;    
-    }    
-
-    // IMPORTANT:    
-    // Save ALL games returned by the selected sports.    
-    // Do not skip unselected competitions here.    
-    matchUpdates[firebaseKey] = match;    
-
-    totalPrepared++;    
-
-    if (match.competitionSelected) {    
-        selectedLeagueMatches++;    
-    } else {    
-        unselectedLeagueMatches++;    
-    }    
-
-    if (Number(match.sportId) === 1) {    
-        footballMatchesPrepared++;    
-    }    
-});    
-
-if (totalPrepared === 0) {    
-    console.log(    
-        "No games returned. Existing matches will be preserved."    
-    );    
-} else {    
-    // Write matches only after processing all successful responses.    
-    // Unselected competitions are also saved.    
-    await db.ref("matches").update(matchUpdates);    
-}    
-
-// --------------------------------------------------    
-// PROVIDER CLEANUP    
-// --------------------------------------------------    
-// Delete old API-Football football matches only if:    
-// 1. Provider was previously API-Football.    
-// 2. All expected requests succeeded.    
-// 3. At least one 365Scores football match was prepared.    
-// This avoids deleting data on partial failures or empty results.    
-
-const syncSettingsSnapshot = await db.ref(    
-    "syncSettings"    
-).once("value");    
-
-const syncSettings = syncSettingsSnapshot.val() || {};    
-
-const previousProvider = toText(    
-    syncSettings.currentProvider,    
-    ""    
-).toLowerCase();    
-
-const allRequestsSucceeded =    
-    successfulRequests === expectedRequests &&    
-    requestErrors.length === 0;    
-
-if (    
-    previousProvider === "apifootball" &&    
-    allRequestsSucceeded &&    
-    footballMatchesPrepared > 0    
-) {    
-    const cleanupUpdates = {};    
-
-    Object.keys(oldMatches).forEach(function (key) {    
-        const oldMatch = oldMatches[key] || {};    
-
-        const oldProvider = toText(    
-            oldMatch.apiProvider,    
-            ""    
-        ).toLowerCase();    
-
-        const oldSportId = toNumber(oldMatch.sportId, 0);    
-
-        if (    
-            oldProvider === "apifootball" &&    
-            oldSportId === 1    
-        ) {    
-            cleanupUpdates[key] = null;    
-        }    
-    });    
-
-    if (Object.keys(cleanupUpdates).length > 0) {    
-        await db.ref("matches").update(cleanupUpdates);    
-
-        console.log(    
-            "Removed old API-Football football matches:",    
-            Object.keys(cleanupUpdates).length    
-        );    
-    }    
-} else if (previousProvider === "apifootball") {    
-    console.log(    
-        "Provider cleanup skipped: requests were incomplete or " +    
-        "no 365Scores football matches were received."    
-    );    
-}    
-
-// Update provider marker only when all requests succeeded and games exist.    
-if (    
-    allRequestsSucceeded &&    
-    totalPrepared > 0    
-) {    
-    await db.ref("syncSettings").update({    
-        currentProvider: PROVIDER,    
-        lastSuccessfulSync: Date.now(),    
-        lastSyncStatus: "success",    
-        lastSyncMatchCount: totalPrepared,    
-        lastSyncSelectedLeagueCount: selectedLeagueMatches,    
-        lastSyncUnselectedLeagueCount: unselectedLeagueMatches    
-    });    
-} else {    
-    await db.ref("syncSettings").update({    
-        lastSyncAttempt: Date.now(),    
-        lastSyncStatus: "partial",    
-        lastSyncMatchCount: totalPrepared,    
-        lastSyncErrors: requestErrors    
-    });    
-}    
-
-console.log("----------------------------------------");    
-console.log("365Scores sync finished");    
-console.log("Matches saved:", totalPrepared);    
-console.log("Selected league matches:", selectedLeagueMatches);    
-console.log("Unselected league matches:", unselectedLeagueMatches);    
-console.log("Requests successful:", successfulRequests + "/" + expectedRequests);    
-console.log("----------------------------------------");    
-
-if (requestErrors.length > 0) {    
-    console.log("Some requests failed:");    
-    requestErrors.forEach(function (error) {    
-        console.log("- " + error);    
-    });    
-}
-
-}
-
-// --------------------------------------------------
-// RUN
-// --------------------------------------------------
-
-sync365Scores()
-.then(function () {
-console.log("365Scores script completed.");
-})
-.catch(function (error) {
-console.error("365Scores sync failed:", error);
-
-process.exitCode = 1;    
-});
+main()
+    .catch(function (error) {
+        console.error("Sports Hub sync failed.");
+
+        console.error(
+            error && error.message
+                ? error.message
+                : error
+        );
+
+        process.exitCode = 1;
+    });
