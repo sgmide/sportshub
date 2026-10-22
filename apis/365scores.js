@@ -115,14 +115,26 @@ function sleep(ms) {
     });
 }
 
-function cleanKey(value) {
-    return String(value == null ? "" : value)
-        .trim()
-        .replace(/[.#$\[\]/]/g, "_");
-}
-
 function text(value) {
     return value == null ? "" : String(value).trim();
+}
+
+function cleanKey(value) {
+    return text(value).replace(/[.#$\[\]/]/g, "_");
+}
+
+function normalizeBoolean(value) {
+    if (value === true || value === 1) return true;
+
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+
+        return normalized === "true" ||
+            normalized === "1" ||
+            normalized === "yes";
+    }
+
+    return false;
 }
 
 function objectId(obj) {
@@ -137,6 +149,8 @@ function objectId(obj) {
         obj.ID ||
         obj.competitorId ||
         obj.competitionId ||
+        obj.tournamentId ||
+        obj.leagueId ||
         obj.sportId ||
         obj.gameId ||
         obj.teamId ||
@@ -628,10 +642,6 @@ function convertGame(game, old) {
         }).format(date);
     }
 
-    /*
-     * Existing match data is merged first.
-     * Admin fields such as streamUrl, goalEvents and stadium are preserved.
-     */
     const match = Object.assign({}, existing, {
         gameId: id,
         apiFixtureId: id,
@@ -652,7 +662,9 @@ function convertGame(game, old) {
         score: score !== "-" ? score : (existing.score || "-"),
         status: status || existing.status || "NS",
         shortStatus: status || existing.shortStatus || "NS",
-        timestamp: date ? date.getTime() : (existing.timestamp || timestamp()),
+        timestamp: date
+            ? date.getTime()
+            : (existing.timestamp || timestamp()),
         matchTimeMillis: date
             ? date.getTime()
             : (existing.matchTimeMillis || 0)
@@ -722,7 +734,7 @@ async function ensureSports(db, records) {
         }
     });
 
-    if (Object.keys(updates).length) {
+    if (Object.keys(updates).length > 0) {
         await db.ref().update(updates);
     }
 }
@@ -745,16 +757,13 @@ async function ensureCompetitions(db, records) {
 
         const old = oldCompetitions[id] || {};
         const hasSelection = Object.prototype.hasOwnProperty.call(
-            oldSelections, id
+            oldSelections,
+            id
         );
 
-        /*
-         * competition_selection is the source of truth.
-         * Existing true/false selection is never overwritten.
-         */
         const selected = hasSelection
-            ? oldSelections[id] === true
-            : old.selected === true;
+            ? normalizeBoolean(oldSelections[id])
+            : normalizeBoolean(old.selected);
 
         const comp = Object.assign({}, old, {
             id: record.competitionId,
@@ -772,7 +781,7 @@ async function ensureCompetitions(db, records) {
         }
     });
 
-    if (Object.keys(updates).length) {
+    if (Object.keys(updates).length > 0) {
         await db.ref().update(updates);
     }
 
@@ -806,10 +815,6 @@ async function main() {
     const allGames = [];
     const seen = {};
 
-    /*
-     * Fetch all configured dates before changing matches.
-     * Any request failure aborts sync and preserves existing matches.
-     */
     for (let i = 0; i < dates.length; i++) {
         console.log("Fetching:", dates[i]);
 
@@ -851,14 +856,34 @@ async function main() {
     await ensureSports(db, records);
 
     const result = await ensureCompetitions(db, records);
-    const selections = result.selections;
+    const selections = result.selections || {};
 
-    /*
-     * Only competition_selection/{id} === true is eligible.
-     */
+    const selectedCompetitionIds = Object.keys(selections).filter(
+        function (id) {
+            return normalizeBoolean(selections[id]);
+        }
+    );
+
+    const apiCompetitionIds = Array.from(
+        new Set(
+            records.map(function (record) {
+                return cleanKey(record.competitionId);
+            })
+        )
+    );
+
+    console.log("Selected competition IDs:", selectedCompetitionIds);
+    console.log("Competition IDs in API:", apiCompetitionIds);
+
+    const selectedIdSet = {};
+
+    selectedCompetitionIds.forEach(function (id) {
+        selectedIdSet[cleanKey(id)] = true;
+    });
+
     const selectedRecords = records.filter(function (record) {
         const id = cleanKey(record.competitionId);
-        return selections[id] === true;
+        return selectedIdSet[id] === true;
     });
 
     console.log("Games fetched:", allGames.length);
@@ -885,6 +910,7 @@ async function main() {
         if (!id) return;
 
         const old = existingMatches[id] || {};
+
         const sourceGame = allGames.find(function (game) {
             return fixtureId(game) === record.id;
         });
@@ -904,10 +930,6 @@ async function main() {
         return;
     }
 
-    /*
-     * Only selected match paths are updated.
-     * Existing matches are not deleted when selection becomes false.
-     */
     await db.ref().update(updates);
 
     const successTime = timestamp();
@@ -931,6 +953,11 @@ async function main() {
 
 main().catch(function (error) {
     console.error("Sports Hub sync failed.");
-    console.error(error && error.stack ? error.stack : error.message || error);
+    console.error(
+        error && error.stack
+            ? error.stack
+            : error.message || error
+    );
+
     process.exitCode = 1;
 });
