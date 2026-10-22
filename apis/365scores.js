@@ -19,18 +19,15 @@ let db;
 
 function initializeFirebase() {
     if (admin.apps.length > 0) {
+        db = admin.database();
         return;
     }
 
     const serviceAccountText = process.env.FIREBASE_SERVICE_ACCOUNT;
     const databaseURL = process.env.FIREBASE_DATABASE_URL;
 
-    if (!serviceAccountText) {
-        throw new Error("FIREBASE_SERVICE_ACCOUNT secret missing");
-    }
-
-    if (!databaseURL) {
-        throw new Error("FIREBASE_DATABASE_URL secret missing");
+    if (!serviceAccountText || !databaseURL) {
+        throw new Error("Firebase secrets are missing.");
     }
 
     let serviceAccount;
@@ -38,9 +35,7 @@ function initializeFirebase() {
     try {
         serviceAccount = JSON.parse(serviceAccountText);
     } catch (error) {
-        throw new Error(
-            "FIREBASE_SERVICE_ACCOUNT is not valid JSON"
-        );
+        throw new Error("Invalid FIREBASE_SERVICE_ACCOUNT JSON.");
     }
 
     admin.initializeApp({
@@ -61,14 +56,16 @@ function sleep(ms) {
     });
 }
 
+function isObject(value) {
+    return value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value);
+}
+
 function toNumber(value, fallback) {
-    const number = Number(value);
+    const n = Number(value);
 
-    if (!Number.isFinite(number)) {
-        return fallback;
-    }
-
-    return number;
+    return Number.isFinite(n) ? n : fallback;
 }
 
 function toText(value, fallback) {
@@ -77,12 +74,6 @@ function toText(value, fallback) {
     }
 
     return String(value);
-}
-
-function isObject(value) {
-    return value !== null &&
-        typeof value === "object" &&
-        !Array.isArray(value);
 }
 
 function cleanKey(value) {
@@ -110,14 +101,8 @@ function normalizeBoolean(value) {
         return true;
     }
 
-    if (
-        typeof value === "string" &&
-        value.toLowerCase() === "true"
-    ) {
-        return true;
-    }
-
-    return false;
+    return typeof value === "string" &&
+        value.toLowerCase() === "true";
 }
 
 function getTimestamp(value) {
@@ -126,17 +111,13 @@ function getTimestamp(value) {
     }
 
     if (typeof value === "number") {
-        return value < 1000000000000
-            ? value * 1000
-            : value;
+        return value < 1000000000000 ? value * 1000 : value;
     }
 
     const numeric = Number(value);
 
     if (Number.isFinite(numeric) && numeric > 0) {
-        return numeric < 1000000000000
-            ? numeric * 1000
-            : numeric;
+        return numeric < 1000000000000 ? numeric * 1000 : numeric;
     }
 
     const parsed = Date.parse(value);
@@ -150,38 +131,27 @@ function getTimestamp(value) {
 
 async function getSettings() {
     const snapshot = await db.ref("settings").once("value");
-
     return snapshot.val() || {};
 }
 
-function getSelectedParser(settings) {
-    return toText(
-        settings.selected_parser,
-        PROVIDER
-    ).toLowerCase();
-}
-
 function getParserConfig(settings) {
-    const selectedParser = getSelectedParser(settings);
+    const parserKey = toText(
+        settings.selected_parser,
+        "parse1"
+    ).toLowerCase();
 
     const parseSettings = isObject(settings.parse)
         ? settings.parse
         : {};
 
-    const parserConfig = isObject(parseSettings[selectedParser])
-        ? parseSettings[selectedParser]
+    const config = isObject(parseSettings[parserKey])
+        ? parseSettings[parserKey]
         : {};
 
     return {
-        selectedParser: selectedParser,
-        apiParser: toText(
-            parserConfig.api_parser,
-            ""
-        ).toLowerCase(),
-        apiUrl: toText(
-            parserConfig.api_url,
-            DEFAULT_API_URL
-        )
+        selectedParser: parserKey,
+        apiParser: toText(config.api_parser, "").toLowerCase(),
+        apiUrl: toText(config.api_url, DEFAULT_API_URL)
     };
 }
 
@@ -219,17 +189,14 @@ function normalizeSportIds(settings) {
             if (isObject(item)) {
                 addSport(
                     getFirstValue(item.id, item.sportId, item.sport_id),
-                    item.selected !== false &&
-                    item.enabled !== false
+                    item.selected !== false && item.enabled !== false
                 );
             } else if (item === true || item === 1) {
                 addSport(index, true);
             } else if (typeof item === "number") {
                 addSport(item, true);
-            } else if (typeof item === "string") {
-                if (item.trim() !== "") {
-                    addSport(item, true);
-                }
+            } else if (typeof item === "string" && item.trim() !== "") {
+                addSport(item, true);
             }
         });
     } else if (isObject(selectedSports)) {
@@ -239,8 +206,7 @@ function normalizeSportIds(settings) {
             if (isObject(item)) {
                 addSport(
                     getFirstValue(item.id, item.sportId, key),
-                    item.selected !== false &&
-                    item.enabled !== false
+                    item.selected !== false && item.enabled !== false
                 );
             } else {
                 addSport(key, normalizeBoolean(item));
@@ -248,16 +214,15 @@ function normalizeSportIds(settings) {
         });
     }
 
-    // Legacy setting support
     if (result.length === 0 && settings.selected_sport !== undefined) {
-        const legacySport = settings.selected_sport;
+        const legacy = settings.selected_sport;
 
-        if (isObject(legacySport)) {
-            Object.keys(legacySport).forEach(function (key) {
-                addSport(key, normalizeBoolean(legacySport[key]));
+        if (isObject(legacy)) {
+            Object.keys(legacy).forEach(function (key) {
+                addSport(key, normalizeBoolean(legacy[key]));
             });
         } else {
-            addSport(legacySport, true);
+            addSport(legacy, true);
         }
     }
 
@@ -265,12 +230,12 @@ function normalizeSportIds(settings) {
 }
 
 // --------------------------------------------------
-// DATE HELPERS
+// DATE HELPERS - INDIA TIME
 // --------------------------------------------------
 
-function getDatePartsInTimeZone(date, timeZone) {
+function getIndiaDateParts(date) {
     const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: timeZone,
+        timeZone: TIME_ZONE,
         year: "numeric",
         month: "2-digit",
         day: "2-digit"
@@ -292,14 +257,12 @@ function getDatePartsInTimeZone(date, timeZone) {
 }
 
 function getDateOffset(offset) {
-    const now = new Date();
-    const parts = getDatePartsInTimeZone(now, TIME_ZONE);
+    const today = getIndiaDateParts(new Date());
 
-    // Use UTC arithmetic to avoid local machine timezone differences.
     const date = new Date(Date.UTC(
-        parts.year,
-        parts.month - 1,
-        parts.day + offset
+        today.year,
+        today.month - 1,
+        today.day + offset
     ));
 
     return {
@@ -309,18 +272,47 @@ function getDateOffset(offset) {
     };
 }
 
-function formatApiDate(dateParts) {
-    const day = String(dateParts.day).padStart(2, "0");
-    const month = String(dateParts.month).padStart(2, "0");
-    const year = String(dateParts.year);
-
-    return day + "/" + month + "/" + year;
+function formatApiDate(parts) {
+    return String(parts.day).padStart(2, "0") + "/" +
+        String(parts.month).padStart(2, "0") + "/" +
+        String(parts.year);
 }
 
-function formatIsoDate(dateParts) {
-    return String(dateParts.year) + "-" +
-        String(dateParts.month).padStart(2, "0") + "-" +
-        String(dateParts.day).padStart(2, "0");
+function formatIsoDate(parts) {
+    return String(parts.year) + "-" +
+        String(parts.month).padStart(2, "0") + "-" +
+        String(parts.day).padStart(2, "0");
+}
+
+function getIndiaDateFromTimestamp(timestamp) {
+    if (!timestamp || timestamp <= 0) {
+        return "";
+    }
+
+    const parts = getIndiaDateParts(new Date(timestamp));
+
+    return formatIsoDate(parts);
+}
+
+function getAllowedDateMap() {
+    const map = {};
+
+    [-1, 0, 1].forEach(function (offset) {
+        const parts = getDateOffset(offset);
+        map[formatIsoDate(parts)] = true;
+    });
+
+    return map;
+}
+
+function isWithinAllowedDates(timestamp, allowedDateMap) {
+    if (!timestamp || timestamp <= 0) {
+        return false;
+    }
+
+    const indiaDate = getIndiaDateFromTimestamp(timestamp);
+
+    return !!allowedDateMap[indiaDate];
 }
 
 // --------------------------------------------------
@@ -345,9 +337,7 @@ async function requestJson(url) {
         });
 
         if (!response.ok) {
-            throw new Error(
-                "HTTP " + response.status + " for " + url
-            );
+            throw new Error("HTTP " + response.status);
         }
 
         return await response.json();
@@ -362,11 +352,7 @@ function buildUrl(baseUrl, params) {
     Object.keys(params).forEach(function (key) {
         const value = params[key];
 
-        if (
-            value !== undefined &&
-            value !== null &&
-            value !== ""
-        ) {
+        if (value !== undefined && value !== null && value !== "") {
             url.searchParams.set(key, String(value));
         }
     });
@@ -375,7 +361,7 @@ function buildUrl(baseUrl, params) {
 }
 
 // --------------------------------------------------
-// FETCH SPORTS AND COMPETITIONS
+// SPORTS AND COMPETITIONS
 // --------------------------------------------------
 
 async function fetchSportsAndCompetitions(apiUrl) {
@@ -384,20 +370,14 @@ async function fetchSportsAndCompetitions(apiUrl) {
         timezoneName: TIME_ZONE
     });
 
-    console.log("Fetching sports and competitions catalog...");
-
     const data = await requestJson(url);
 
     if (!data || !Array.isArray(data.sports)) {
-        throw new Error(
-            "365Scores response does not contain a valid sports array"
-        );
+        throw new Error("Invalid 365Scores sports catalog.");
     }
 
     if (!Array.isArray(data.competitions)) {
-        throw new Error(
-            "365Scores response does not contain a valid competitions array"
-        );
+        throw new Error("Invalid 365Scores competitions catalog.");
     }
 
     return {
@@ -405,10 +385,6 @@ async function fetchSportsAndCompetitions(apiUrl) {
         competitions: data.competitions
     };
 }
-
-// --------------------------------------------------
-// COMPETITION HELPERS
-// --------------------------------------------------
 
 function getCompetitionId(competition) {
     return toNumber(
@@ -445,25 +421,21 @@ function getCompetitionName(competition) {
 
 function getSportName(sport) {
     return toText(
-        getFirstValue(
-            sport.name,
-            sport.shortName,
-            sport.displayName
-        ),
+        getFirstValue(sport.name, sport.shortName, sport.displayName),
         "Unknown Sport"
     );
 }
 
 function getCompetitionLogo(competition) {
-    const directLogo = getFirstValue(
+    const direct = getFirstValue(
         competition.logo,
         competition.image,
         competition.imageUrl,
         competition.logoUrl
     );
 
-    if (directLogo) {
-        return String(directLogo);
+    if (direct) {
+        return String(direct);
     }
 
     const imageId = getFirstValue(
@@ -471,26 +443,20 @@ function getCompetitionLogo(competition) {
         competition.image_id
     );
 
-    if (imageId) {
-        return IMAGE_URL + "competitors/" + imageId;
-    }
-
-    return "";
+    return imageId
+        ? IMAGE_URL + "competitors/" + imageId
+        : "";
 }
 
 function getSportLogo(sport) {
     return toText(
-        getFirstValue(
-            sport.logo,
-            sport.image,
-            sport.imageUrl
-        ),
+        getFirstValue(sport.logo, sport.image, sport.imageUrl),
         ""
     );
 }
 
 // --------------------------------------------------
-// PRESERVE COMPETITION SELECTION
+// SAVE CATALOG WITHOUT RESETTING ADMIN SELECTION
 // --------------------------------------------------
 
 async function saveSportsAndCompetitions(
@@ -498,16 +464,13 @@ async function saveSportsAndCompetitions(
     competitions,
     selectedSportIds
 ) {
-    const sportUpdates = {};
-    const competitionUpdates = {};
-
     const oldSportsSnapshot = await db.ref("sports").once("value");
     const oldCompetitionsSnapshot = await db.ref("competitions").once("value");
-    const selectionSnapshot = await db.ref("competition_selection").once("value");
+    const selectionsSnapshot = await db.ref("competition_selection").once("value");
 
     const oldSports = oldSportsSnapshot.val() || {};
     const oldCompetitions = oldCompetitionsSnapshot.val() || {};
-    const selections = selectionSnapshot.val() || {};
+    const selections = selectionsSnapshot.val() || {};
 
     const selectedSportMap = {};
 
@@ -515,22 +478,22 @@ async function saveSportsAndCompetitions(
         selectedSportMap[String(id)] = true;
     });
 
-    const validSportMap = {};
+    const sportUpdates = {};
+    const competitionUpdates = {};
+    const selectionUpdates = {};
 
     sports.forEach(function (sport) {
-        const sportId = toNumber(sport.id, 0);
+        const id = toNumber(sport.id, 0);
 
-        if (sportId <= 0) {
+        if (id <= 0) {
             return;
         }
 
-        const key = String(sportId);
-        const oldSport = oldSports[key] || {};
+        const key = String(id);
+        const old = oldSports[key] || {};
 
-        validSportMap[key] = true;
-
-        sportUpdates[key] = Object.assign({}, oldSport, {
-            id: sportId,
+        sportUpdates[key] = Object.assign({}, old, {
+            id: id,
             name: getSportName(sport),
             logo: getSportLogo(sport),
             selected: !!selectedSportMap[key],
@@ -539,38 +502,33 @@ async function saveSportsAndCompetitions(
         });
     });
 
-    const validCompetitionMap = {};
-
     competitions.forEach(function (competition) {
-        const competitionId = getCompetitionId(competition);
+        const id = getCompetitionId(competition);
 
-        if (competitionId <= 0) {
+        if (id <= 0) {
             return;
         }
 
-        const key = String(competitionId);
+        const key = String(id);
         const sportId = getSportId(competition);
-        const oldCompetition = oldCompetitions[key] || {};
+        const old = oldCompetitions[key] || {};
 
-        const selectionExists = Object.prototype.hasOwnProperty.call(
+        const hasSelection = Object.prototype.hasOwnProperty.call(
             selections,
             key
         );
 
-        // Existing selection always wins.
-        const selected = selectionExists
+        const selected = hasSelection
             ? normalizeBoolean(selections[key])
-            : normalizeBoolean(oldCompetition.selected);
-
-        validCompetitionMap[key] = true;
+            : normalizeBoolean(old.selected);
 
         const sport = sports.find(function (item) {
             return Number(item.id) === sportId;
         });
 
-        competitionUpdates[key] = Object.assign({}, oldCompetition, {
-            id: competitionId,
-            competitionId: competitionId,
+        competitionUpdates[key] = Object.assign({}, old, {
+            id: id,
+            competitionId: id,
             sportId: sportId,
             sportName: sport ? getSportName(sport) : "",
             name: getCompetitionName(competition),
@@ -580,20 +538,11 @@ async function saveSportsAndCompetitions(
             updatedAt: Date.now()
         });
 
-        // Do not replace existing admin selection.
-        // Initialize selection only when no entry exists.
-        if (!selectionExists) {
-            selectionSnapshot.ref.child(key).set(selected).catch(function (error) {
-                console.error(
-                    "Could not initialize selection for competition",
-                    key,
-                    error.message
-                );
-            });
+        if (!hasSelection) {
+            selectionUpdates[key] = selected;
         }
     });
 
-    // Merge instead of replacing whole branches.
     if (Object.keys(sportUpdates).length > 0) {
         await db.ref("sports").update(sportUpdates);
     }
@@ -602,21 +551,12 @@ async function saveSportsAndCompetitions(
         await db.ref("competitions").update(competitionUpdates);
     }
 
-    console.log(
-        "Sports catalog updated:",
-        Object.keys(sportUpdates).length
-    );
-
-    console.log(
-        "Competitions catalog updated:",
-        Object.keys(competitionUpdates).length
-    );
+    if (Object.keys(selectionUpdates).length > 0) {
+        await db.ref("competition_selection").update(selectionUpdates);
+    }
 
     return {
-        oldCompetitions: oldCompetitions,
-        selections: selections,
-        validCompetitionMap: validCompetitionMap,
-        validSportMap: validSportMap
+        oldCompetitions: oldCompetitions
     };
 }
 
@@ -625,9 +565,7 @@ async function saveSportsAndCompetitions(
 // --------------------------------------------------
 
 function getMatchStatus(game) {
-    const statusObject = isObject(game.status)
-        ? game.status
-        : {};
+    const statusObject = isObject(game.status) ? game.status : {};
 
     const statusText = toText(
         getFirstValue(
@@ -655,89 +593,39 @@ function getMatchStatus(game) {
 
     const combined = (statusText + " " + statusCode).toUpperCase();
 
-    if (
-        /\bFT\b|\bAET\b|\bPEN\b|FINISHED|ENDED|FULL TIME/.test(combined)
-    ) {
-        return {
-            status: "FT",
-            shortStatus: "FT",
-            live: false
-        };
+    if (/\bFT\b|\bAET\b|\bPEN\b|FINISHED|ENDED|FULL TIME/.test(combined)) {
+        return { status: "FT", shortStatus: "FT", live: false };
     }
 
-    if (
-        /\bCANC\b|CANCELLED|CANCELED/.test(combined)
-    ) {
-        return {
-            status: "CANC",
-            shortStatus: "CANC",
-            live: false
-        };
+    if (/\bCANC\b|CANCELLED|CANCELED/.test(combined)) {
+        return { status: "CANC", shortStatus: "CANC", live: false };
     }
 
-    if (
-        /\bPOSTP\b|POSTPONED/.test(combined)
-    ) {
-        return {
-            status: "PPD",
-            shortStatus: "PPD",
-            live: false
-        };
+    if (/\bPOSTP\b|POSTPONED/.test(combined)) {
+        return { status: "PPD", shortStatus: "PPD", live: false };
     }
 
-    if (
-        /\bABD\b|ABANDONED/.test(combined)
-    ) {
-        return {
-            status: "ABD",
-            shortStatus: "ABD",
-            live: false
-        };
+    if (/\bABD\b|ABANDONED/.test(combined)) {
+        return { status: "ABD", shortStatus: "ABD", live: false };
     }
 
-    if (
-        /\bHT\b|HALF TIME|HALFTIME/.test(combined)
-    ) {
-        return {
-            status: "HT",
-            shortStatus: "HT",
-            live: true
-        };
+    if (/\bHT\b|HALF TIME|HALFTIME/.test(combined)) {
+        return { status: "HT", shortStatus: "HT", live: true };
     }
 
-    if (
-        /\b1H\b|FIRST HALF|1ST HALF/.test(combined)
-    ) {
-        return {
-            status: "1H",
-            shortStatus: "LIVE",
-            live: true
-        };
+    if (/\b1H\b|FIRST HALF|1ST HALF/.test(combined)) {
+        return { status: "1H", shortStatus: "LIVE", live: true };
     }
 
-    if (
-        /\b2H\b|SECOND HALF|2ND HALF/.test(combined)
-    ) {
-        return {
-            status: "2H",
-            shortStatus: "LIVE",
-            live: true
-        };
+    if (/\b2H\b|SECOND HALF|2ND HALF/.test(combined)) {
+        return { status: "2H", shortStatus: "LIVE", live: true };
     }
 
-    if (
-        /\bET\b|EXTRA TIME/.test(combined)
-    ) {
-        return {
-            status: "ET",
-            shortStatus: "LIVE",
-            live: true
-        };
+    if (/\bET\b|EXTRA TIME/.test(combined)) {
+        return { status: "ET", shortStatus: "LIVE", live: true };
     }
 
-    if (
-        /\bLIVE\b|\bIN PLAY\b|\bINPLAY\b|\bPLAYING\b|\bQ[1-4]\b|\bOT\b/.test(combined)
-    ) {
+    if (/\bLIVE\b|\bIN PLAY\b|\bINPLAY\b|\bPLAYING\b|\bQ[1-4]\b|\bOT\b/.test(combined)) {
         return {
             status: statusText || "LIVE",
             shortStatus: "LIVE",
@@ -751,36 +639,11 @@ function getMatchStatus(game) {
         game.startTime
     );
 
-    const timestamp = getTimestamp(
-        getFirstValue(
-            game.startTime,
-            game.startDate,
-            game.date,
-            game.gameDate
-        )
-    );
-
-    if (timestamp > 0 && timestamp < Date.now()) {
-        // Avoid automatically calling every past kickoff a finished match.
-        // The API status is authoritative when available.
-        if (!statusText && !statusCode) {
-            return {
-                status: "UNKNOWN",
-                shortStatus: "UNKNOWN",
-                live: false
-            };
-        }
-    }
-
     if (gameTime !== null) {
         const timeText = String(gameTime).toUpperCase();
 
         if (timeText.indexOf("'") !== -1 || /^\d+$/.test(timeText)) {
-            return {
-                status: timeText,
-                shortStatus: "LIVE",
-                live: true
-            };
+            return { status: timeText, shortStatus: "LIVE", live: true };
         }
     }
 
@@ -796,11 +659,11 @@ function getMatchStatus(game) {
 // --------------------------------------------------
 
 function getTeamObject(game, side) {
-    const first = side === "home"
+    const value = side === "home"
         ? getFirstValue(game.homeCompetitor, game.homeTeam, game.home)
         : getFirstValue(game.awayCompetitor, game.awayTeam, game.away);
 
-    return isObject(first) ? first : {};
+    return isObject(value) ? value : {};
 }
 
 function getTeamName(game, side) {
@@ -837,7 +700,7 @@ function getTeamId(game, side) {
 function getTeamLogo(game, side, oldMatch) {
     const team = getTeamObject(game, side);
 
-    const directLogo = getFirstValue(
+    const direct = getFirstValue(
         team.logo,
         team.image,
         team.imageUrl,
@@ -845,34 +708,28 @@ function getTeamLogo(game, side, oldMatch) {
         team.imagePath
     );
 
-    if (directLogo) {
-        return String(directLogo);
+    if (direct) {
+        return String(direct);
     }
 
-    const imageId = getFirstValue(
-        team.imageId,
-        team.image_id
-    );
+    const imageId = getFirstValue(team.imageId, team.image_id);
 
     if (imageId) {
         return IMAGE_URL + "competitors/" + imageId;
     }
 
-    const oldLogo = side === "home"
-        ? getFirstValue(oldMatch.homeLogo, oldMatch.homeTeamLogo)
-        : getFirstValue(oldMatch.awayLogo, oldMatch.awayTeamLogo);
-
-    return toText(oldLogo, "");
+    return toText(
+        side === "home"
+            ? getFirstValue(oldMatch.homeLogo, oldMatch.homeTeamLogo)
+            : getFirstValue(oldMatch.awayLogo, oldMatch.awayTeamLogo),
+        ""
+    );
 }
-
-// --------------------------------------------------
-// SCORE HELPERS
-// --------------------------------------------------
 
 function getScore(game, side) {
     const team = getTeamObject(game, side);
 
-    const directScore = getFirstValue(
+    const value = getFirstValue(
         team.score,
         team.currentScore,
         team.goals,
@@ -880,11 +737,7 @@ function getScore(game, side) {
         side === "home" ? game.homeCompetitorScore : game.awayCompetitorScore
     );
 
-    if (directScore === null) {
-        return 0;
-    }
-
-    const score = Number(directScore);
+    const score = Number(value);
 
     return Number.isFinite(score) ? score : 0;
 }
@@ -894,12 +747,12 @@ function getScore(game, side) {
 // --------------------------------------------------
 
 function convertMatch(game, oldMatch, selectedCompetitionMap) {
-    const matchId = toText(
+    const id = toText(
         getFirstValue(game.id, game.gameId, game.fixtureId),
         ""
     );
 
-    if (!matchId) {
+    if (!id) {
         return null;
     }
 
@@ -912,13 +765,6 @@ function convertMatch(game, oldMatch, selectedCompetitionMap) {
     );
 
     const sportId = getSportId(game);
-
-    const homeTeam = getTeamName(game, "home");
-    const awayTeam = getTeamName(game, "away");
-
-    const homeScore = getScore(game, "home");
-    const awayScore = getScore(game, "away");
-
     const statusInfo = getMatchStatus(game);
 
     const dateSource = getFirstValue(
@@ -932,27 +778,24 @@ function convertMatch(game, oldMatch, selectedCompetitionMap) {
 
     const matchTimeMillis = getTimestamp(dateSource);
 
-    const timestamp = matchTimeMillis > 0
-        ? matchTimeMillis
-        : Date.now();
-
-    const competitionObject = isObject(game.competition)
+    const competition = isObject(game.competition)
         ? game.competition
         : {};
 
     const competitionName = toText(
         getFirstValue(
-            competitionObject.name,
-            competitionObject.shortName,
+            competition.name,
+            competition.shortName,
             game.competitionName,
             game.leagueName
         ),
         "Unknown Competition"
     );
 
-    const competitionSelected = !!selectedCompetitionMap[
-        String(competitionId)
-    ];
+    const home = getTeamName(game, "home");
+    const away = getTeamName(game, "away");
+    const homeLogo = getTeamLogo(game, "home", oldMatch);
+    const awayLogo = getTeamLogo(game, "away", oldMatch);
 
     const elapsed = getFirstValue(
         game.gameTime,
@@ -961,12 +804,9 @@ function convertMatch(game, oldMatch, selectedCompetitionMap) {
         game.matchTime
     );
 
-    const homeLogo = getTeamLogo(game, "home", oldMatch);
-    const awayLogo = getTeamLogo(game, "away", oldMatch);
-
-    const apiMatch = Object.assign({}, oldMatch, {
-        gameId: matchId,
-        apiFixtureId: matchId,
+    const match = Object.assign({}, oldMatch, {
+        gameId: id,
+        apiFixtureId: id,
         apiProvider: PROVIDER,
 
         sportId: sportId,
@@ -976,16 +816,16 @@ function convertMatch(game, oldMatch, selectedCompetitionMap) {
         league: competitionName,
         competitionName: competitionName,
 
-        home: homeTeam,
-        away: awayTeam,
-        homeTeam: homeTeam,
-        awayTeam: awayTeam,
+        home: home,
+        away: away,
+        homeTeam: home,
+        awayTeam: away,
 
         homeTeamId: getTeamId(game, "home"),
         awayTeamId: getTeamId(game, "away"),
 
-        homeScore: homeScore,
-        awayScore: awayScore,
+        homeScore: getScore(game, "home"),
+        awayScore: getScore(game, "away"),
 
         homeLogo: homeLogo,
         awayLogo: awayLogo,
@@ -998,52 +838,48 @@ function convertMatch(game, oldMatch, selectedCompetitionMap) {
 
         elapsed: elapsed === null ? "" : String(elapsed),
 
-        timestamp: timestamp,
+        timestamp: matchTimeMillis || Date.now(),
         matchTimeMillis: matchTimeMillis,
 
+        // Keep a consistent ISO date, as used by this script.
         date: matchTimeMillis > 0
             ? new Date(matchTimeMillis).toISOString()
             : "",
 
-        competitionSelected: competitionSelected,
+        competitionSelected: !!selectedCompetitionMap[String(competitionId)],
 
         updatedAt: Date.now()
     });
 
-    // Preserve admin-managed values if the API doesn't supply them.
-    apiMatch.streamUrl = toText(
+    match.streamUrl = toText(
         getFirstValue(game.streamUrl, oldMatch.streamUrl),
         ""
     );
 
-    apiMatch.goalEvents = getFirstValue(
+    match.goalEvents = getFirstValue(
         game.goalEvents,
         oldMatch.goalEvents,
         []
     );
 
-    apiMatch.adminNotes = toText(oldMatch.adminNotes, "");
+    match.adminNotes = toText(oldMatch.adminNotes, "");
 
-    apiMatch.stadium = toText(
-        getFirstValue(
-            game.stadium,
-            game.venue,
-            oldMatch.stadium
-        ),
+    match.stadium = toText(
+        getFirstValue(game.stadium, game.venue, oldMatch.stadium),
         ""
     );
 
-    apiMatch.channels = getFirstValue(
+    match.channels = getFirstValue(
         oldMatch.channels,
         game.channels,
         []
     );
 
-    return apiMatch;
+    return match;
 }
 
 // --------------------------------------------------
-// FETCH GAMES FOR ONE SPORT AND ONE DATE
+// FETCH GAMES
 // --------------------------------------------------
 
 async function fetchGamesForDate(apiUrl, sportId, dateParts) {
@@ -1059,7 +895,7 @@ async function fetchGamesForDate(apiUrl, sportId, dateParts) {
     const url = buildUrl(apiUrl, params);
 
     console.log(
-        "Fetching 365Scores games:",
+        "Fetching games:",
         "sport=" + sportId,
         "date=" + formatApiDate(dateParts)
     );
@@ -1068,9 +904,8 @@ async function fetchGamesForDate(apiUrl, sportId, dateParts) {
 
     if (!data || !Array.isArray(data.games)) {
         throw new Error(
-            "365Scores response does not contain a valid games array " +
-            "(sport=" + sportId +
-            ", date=" + formatApiDate(dateParts) + ")"
+            "Invalid games response for sport=" + sportId +
+            ", date=" + formatApiDate(dateParts)
         );
     }
 
@@ -1089,26 +924,19 @@ async function sync365Scores() {
 
     if (
         parserConfig.selectedParser !== PROVIDER &&
-        parserConfig.apiParser !== PROVIDER
+        parserConfig.apiParser !== PROVIDER &&
+        parserConfig.apiParser !== "365"
     ) {
-        console.log(
-            "365Scores sync skipped. Selected parser:",
-            parserConfig.selectedParser,
-            "API parser:",
-            parserConfig.apiParser
-        );
-
+        console.log("365Scores sync skipped; another API is selected.");
         return;
     }
 
     const selectedSportIds = normalizeSportIds(settings);
 
     if (selectedSportIds.length === 0) {
-        console.log(
-            "No selected sports found in settings/selected_sports."
+        throw new Error(
+            "No selected sports found. Refusing to modify matches."
         );
-
-        return;
     }
 
     const apiUrl = parserConfig.apiUrl || DEFAULT_API_URL;
@@ -1116,10 +944,8 @@ async function sync365Scores() {
     console.log("----------------------------------------");
     console.log("Sports Hub 365Scores Sync");
     console.log("Selected sports:", selectedSportIds.join(", "));
-    console.log("API URL:", apiUrl);
     console.log("----------------------------------------");
 
-    // Fetch catalog first. If this fails, do not modify matches.
     const catalog = await fetchSportsAndCompetitions(apiUrl);
 
     const catalogInfo = await saveSportsAndCompetitions(
@@ -1128,48 +954,46 @@ async function sync365Scores() {
         selectedSportIds
     );
 
-    const selectedSportMap = {};
-
-    selectedSportIds.forEach(function (id) {
-        selectedSportMap[String(id)] = true;
-    });
-
-    // Use the existing Admin App selection as the source of truth.
-    const selectionSnapshot = await db.ref(
-        "competition_selection"
-    ).once("value");
-
+    const selectionSnapshot = await db.ref("competition_selection").once("value");
     const rawSelections = selectionSnapshot.val() || {};
 
     const selectedCompetitionMap = {};
 
     catalog.competitions.forEach(function (competition) {
-        const competitionId = getCompetitionId(competition);
+        const id = getCompetitionId(competition);
 
-        if (competitionId <= 0) {
+        if (id <= 0) {
             return;
         }
 
-        const key = String(competitionId);
+        const key = String(id);
 
         if (Object.prototype.hasOwnProperty.call(rawSelections, key)) {
-            selectedCompetitionMap[key] = normalizeBoolean(
-                rawSelections[key]
-            );
+            selectedCompetitionMap[key] = normalizeBoolean(rawSelections[key]);
         } else {
-            const oldCompetition = catalogInfo.oldCompetitions[key] || {};
-
-            selectedCompetitionMap[key] = normalizeBoolean(
-                oldCompetition.selected
-            );
+            const old = catalogInfo.oldCompetitions[key] || {};
+            selectedCompetitionMap[key] = normalizeBoolean(old.selected);
         }
     });
+
+    const selectedCompetitionCount = Object.keys(selectedCompetitionMap)
+        .filter(function (key) {
+            return selectedCompetitionMap[key];
+        }).length;
+
+    if (selectedCompetitionCount === 0) {
+        throw new Error(
+            "No competitions are selected. Refusing to modify matches."
+        );
+    }
 
     const dates = [
         getDateOffset(-1),
         getDateOffset(0),
         getDateOffset(1)
     ];
+
+    const allowedDateMap = getAllowedDateMap();
 
     const allGames = {};
     const requestErrors = [];
@@ -1203,10 +1027,7 @@ async function sync365Scores() {
                         return;
                     }
 
-                    const key = cleanKey(id);
-
-                    // Deduplicate the same game returned by multiple requests.
-                    allGames[key] = game;
+                    allGames[cleanKey(id)] = game;
                 });
             } catch (error) {
                 const message =
@@ -1215,8 +1036,7 @@ async function sync365Scores() {
                     ": " + error.message;
 
                 requestErrors.push(message);
-
-                console.error("365Scores request failed:", message);
+                console.error("Request failed:", message);
             }
 
             await sleep(REQUEST_DELAY);
@@ -1225,13 +1045,15 @@ async function sync365Scores() {
 
     console.log("Expected requests:", expectedRequests);
     console.log("Successful requests:", successfulRequests);
-    console.log("Failed requests:", requestErrors.length);
     console.log("Unique games received:", Object.keys(allGames).length);
 
+    // Do not delete old matches if even one request failed.
+    const allRequestsSucceeded =
+        successfulRequests === expectedRequests &&
+        requestErrors.length === 0;
+
     if (successfulRequests === 0) {
-        throw new Error(
-            "All 365Scores game requests failed. Existing matches were not changed."
-        );
+        throw new Error("All requests failed. Existing matches preserved.");
     }
 
     const oldMatchesSnapshot = await db.ref("matches").once("value");
@@ -1239,10 +1061,10 @@ async function sync365Scores() {
 
     const matchUpdates = {};
 
-    let totalPrepared = 0;
-    let selectedLeagueMatches = 0;
-    let unselectedLeagueMatches = 0;
-    let footballMatchesPrepared = 0;
+    let savedCount = 0;
+    let skippedUnselected = 0;
+    let skippedOutsideWindow = 0;
+    let skippedNoDate = 0;
 
     Object.keys(allGames).forEach(function (key) {
         const game = allGames[key];
@@ -1269,126 +1091,139 @@ async function sync365Scores() {
             return;
         }
 
-        // IMPORTANT:
-        // Save ALL games returned by the selected sports.
-        // Do not skip unselected competitions here.
+        // Only selected competitions are saved.
+        if (!match.competitionSelected) {
+            skippedUnselected++;
+            return;
+        }
+
+        // Require a valid kickoff timestamp for the retention policy.
+        if (!match.matchTimeMillis || match.matchTimeMillis <= 0) {
+            skippedNoDate++;
+            return;
+        }
+
+        // Only yesterday, today, and tomorrow (India time).
+        if (!isWithinAllowedDates(match.matchTimeMillis, allowedDateMap)) {
+            skippedOutsideWindow++;
+            return;
+        }
+
         matchUpdates[firebaseKey] = match;
-
-        totalPrepared++;
-
-        if (match.competitionSelected) {
-            selectedLeagueMatches++;
-        } else {
-            unselectedLeagueMatches++;
-        }
-
-        if (Number(match.sportId) === 1) {
-            footballMatchesPrepared++;
-        }
+        savedCount++;
     });
 
-    if (totalPrepared === 0) {
-        console.log(
-            "No games returned. Existing matches will be preserved."
-        );
-    } else {
-        // Write matches only after processing all successful responses.
-        // Unselected competitions are also saved.
+    // If partial data came back, update only selected, valid matches.
+    // Never run deletion on a partial sync.
+    if (Object.keys(matchUpdates).length > 0) {
         await db.ref("matches").update(matchUpdates);
     }
 
+    console.log("Selected matches prepared:", savedCount);
+    console.log("Unselected matches skipped:", skippedUnselected);
+    console.log("Outside date range skipped:", skippedOutsideWindow);
+    console.log("Matches without valid date skipped:", skippedNoDate);
+
     // --------------------------------------------------
-    // PROVIDER CLEANUP
+    // SAFE OLD MATCH CLEANUP
     // --------------------------------------------------
-    // Delete old API-Football football matches only if:
-    // 1. Provider was previously API-Football.
-    // 2. All expected requests succeeded.
-    // 3. At least one 365Scores football match was prepared.
-    // This avoids deleting data on partial failures or empty results.
+    // Delete only records that can be confidently identified as:
+    // 1. 365Scores records, or older API-Football football records when
+    //    switching providers.
+    // 2. Outside the allowed India-date window.
+    // 3. Not missing a valid timestamp.
+    //
+    // Do not delete unknown-provider records or records with unknown dates.
 
-    const syncSettingsSnapshot = await db.ref(
-        "syncSettings"
-    ).once("value");
+    let deletedCount = 0;
 
-    const syncSettings = syncSettingsSnapshot.val() || {};
-
-    const previousProvider = toText(
-        syncSettings.currentProvider,
-        ""
-    ).toLowerCase();
-
-    const allRequestsSucceeded =
-        successfulRequests === expectedRequests &&
-        requestErrors.length === 0;
-
-    if (
-        previousProvider === "apifootball" &&
-        allRequestsSucceeded &&
-        footballMatchesPrepared > 0
-    ) {
-        const cleanupUpdates = {};
+    if (allRequestsSucceeded && savedCount > 0) {
+        const deleteUpdates = {};
 
         Object.keys(oldMatches).forEach(function (key) {
-            const oldMatch = oldMatches[key] || {};
+            // Do not delete a record just written in this run.
+            if (Object.prototype.hasOwnProperty.call(matchUpdates, key)) {
+                return;
+            }
+
+            const old = oldMatches[key] || {};
 
             const oldProvider = toText(
-                oldMatch.apiProvider,
+                old.apiProvider,
                 ""
             ).toLowerCase();
 
-            const oldSportId = toNumber(oldMatch.sportId, 0);
+            const oldSportId = toNumber(old.sportId, 0);
 
-            if (
-                oldProvider === "apifootball" &&
-                oldSportId === 1
-            ) {
-                cleanupUpdates[key] = null;
+            const oldTimestamp = getTimestamp(
+                getFirstValue(
+                    old.matchTimeMillis,
+                    old.timestamp
+                )
+            );
+
+            // A match with no reliable date must be preserved.
+            if (!oldTimestamp || oldTimestamp <= 0) {
+                return;
+            }
+
+            const recognized365 = oldProvider === "365scores";
+            const oldApiFootball = oldProvider === "apifootball" &&
+                oldSportId === 1;
+
+            if (!recognized365 && !oldApiFootball) {
+                return;
+            }
+
+            if (!isWithinAllowedDates(oldTimestamp, allowedDateMap)) {
+                deleteUpdates[key] = null;
             }
         });
 
-        if (Object.keys(cleanupUpdates).length > 0) {
-            await db.ref("matches").update(cleanupUpdates);
-
-            console.log(
-                "Removed old API-Football football matches:",
-                Object.keys(cleanupUpdates).length
-            );
+        if (Object.keys(deleteUpdates).length > 0) {
+            await db.ref("matches").update(deleteUpdates);
+            deletedCount = Object.keys(deleteUpdates).length;
         }
-    } else if (previousProvider === "apifootball") {
+
+        console.log("Old matches deleted:", deletedCount);
+    } else {
         console.log(
-            "Provider cleanup skipped: requests were incomplete or " +
-            "no 365Scores football matches were received."
+            "Automatic deletion skipped: requests were incomplete " +
+            "or no selected matches were prepared."
         );
     }
 
-    // Update provider marker only when all requests succeeded and games exist.
-    if (
-        allRequestsSucceeded &&
-        totalPrepared > 0
-    ) {
+    // --------------------------------------------------
+    // SYNC STATUS
+    // --------------------------------------------------
+
+    if (allRequestsSucceeded && savedCount > 0) {
         await db.ref("syncSettings").update({
             currentProvider: PROVIDER,
             lastSuccessfulSync: Date.now(),
             lastSyncStatus: "success",
-            lastSyncMatchCount: totalPrepared,
-            lastSyncSelectedLeagueCount: selectedLeagueMatches,
-            lastSyncUnselectedLeagueCount: unselectedLeagueMatches
+            lastSyncMatchCount: savedCount,
+            lastSyncDeletedCount: deletedCount,
+            lastSyncSelectedLeagueCount: selectedCompetitionCount,
+            lastSyncUnselectedLeagueCount: skippedUnselected,
+            lastSyncDateWindow: "yesterday,today,tomorrow"
         });
     } else {
         await db.ref("syncSettings").update({
             lastSyncAttempt: Date.now(),
-            lastSyncStatus: "partial",
-            lastSyncMatchCount: totalPrepared,
+            lastSyncStatus: allRequestsSucceeded ? "empty" : "partial",
+            lastSyncMatchCount: savedCount,
+            lastSyncDeletedCount: 0,
             lastSyncErrors: requestErrors
         });
     }
 
     console.log("----------------------------------------");
     console.log("365Scores sync finished");
-    console.log("Matches saved:", totalPrepared);
-    console.log("Selected league matches:", selectedLeagueMatches);
-    console.log("Unselected league matches:", unselectedLeagueMatches);
-    console.log("Requests successful:", successfulRequests + "/" + expectedRequests);
+    console.log("Matches saved:", savedCount);
+    console.log("Old matches deleted:", deletedCount);
+    console.log("Selected competitions:", selectedCompetitionCount);
+    console.log("Requests:", successfulRequests + "/" + expectedRequests);
     console.log("----------------------------------------");
 
     if (requestErrors.length > 0) {
@@ -1409,6 +1244,5 @@ sync365Scores()
     })
     .catch(function (error) {
         console.error("365Scores sync failed:", error);
-
         process.exitCode = 1;
     });
