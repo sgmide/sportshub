@@ -12,11 +12,8 @@ const DATE_RANGE = 1;
 const REQUEST_TIMEOUT = 30000;
 const REQUEST_DELAY = 500;
 
-const FIREBASE_SERVICE_ACCOUNT =
-    process.env.FIREBASE_SERVICE_ACCOUNT;
-
-const FIREBASE_DATABASE_URL =
-    process.env.FIREBASE_DATABASE_URL;
+const FIREBASE_SERVICE_ACCOUNT = process.env.FIREBASE_SERVICE_ACCOUNT;
+const FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL;
 
 const API_HEADERS = {
     "User-Agent":
@@ -25,8 +22,9 @@ const API_HEADERS = {
     "Referer": "https://www.365scores.com/"
 };
 
-const DEFAULT_SPORTS = {
-    "01": {
+const DEFAULT_SPORTS = [
+    null,
+    {
         id: 1,
         name: "Football",
         nameForURL: "football",
@@ -35,7 +33,7 @@ const DEFAULT_SPORTS = {
         liveGames: 0,
         totalGames: 0
     },
-    "02": {
+    {
         id: 2,
         name: "Basketball",
         nameForURL: "basketball",
@@ -44,7 +42,7 @@ const DEFAULT_SPORTS = {
         liveGames: 0,
         totalGames: 0
     },
-    "03": {
+    {
         id: 3,
         name: "Tennis",
         nameForURL: "tennis",
@@ -53,7 +51,7 @@ const DEFAULT_SPORTS = {
         liveGames: 0,
         totalGames: 0
     },
-    "04": {
+    {
         id: 4,
         name: "Hockey",
         nameForURL: "hockey",
@@ -62,7 +60,7 @@ const DEFAULT_SPORTS = {
         liveGames: 0,
         totalGames: 0
     },
-    "05": {
+    {
         id: 5,
         name: "Handball",
         nameForURL: "handball",
@@ -71,7 +69,7 @@ const DEFAULT_SPORTS = {
         liveGames: 0,
         totalGames: 0
     },
-    "06": {
+    {
         id: 6,
         name: "A. Football",
         nameForURL: "american-football",
@@ -80,7 +78,7 @@ const DEFAULT_SPORTS = {
         liveGames: 0,
         totalGames: 0
     },
-    "07": {
+    {
         id: 7,
         name: "Baseball",
         nameForURL: "baseball",
@@ -89,7 +87,7 @@ const DEFAULT_SPORTS = {
         liveGames: 0,
         totalGames: 0
     },
-    "08": {
+    {
         id: 8,
         name: "Volleyball",
         nameForURL: "volleyball",
@@ -98,7 +96,7 @@ const DEFAULT_SPORTS = {
         liveGames: 0,
         totalGames: 0
     },
-    "09": {
+    {
         id: 9,
         name: "Rugby",
         nameForURL: "rugby",
@@ -107,7 +105,7 @@ const DEFAULT_SPORTS = {
         liveGames: 0,
         totalGames: 0
     }
-};
+];
 
 function sleep(ms) {
     return new Promise(function (resolve) {
@@ -127,11 +125,8 @@ function normalizeBoolean(value) {
     if (value === true || value === 1) return true;
 
     if (typeof value === "string") {
-        const normalized = value.trim().toLowerCase();
-
-        return normalized === "true" ||
-            normalized === "1" ||
-            normalized === "yes";
+        const v = value.trim().toLowerCase();
+        return v === "true" || v === "1" || v === "yes";
     }
 
     return false;
@@ -259,9 +254,7 @@ function kickoff(game) {
 
         if (typeof value === "number") {
             date = new Date(
-                value < 1000000000000
-                    ? value * 1000
-                    : value
+                value < 1000000000000 ? value * 1000 : value
             );
         } else {
             date = new Date(value);
@@ -302,9 +295,7 @@ function teams(game) {
 }
 
 function teamLogo(team) {
-    if (!team || typeof team !== "object") {
-        return "";
-    }
+    if (!team || typeof team !== "object") return "";
 
     const direct =
         team.logo ||
@@ -501,9 +492,8 @@ function is365Parser(settings) {
 }
 
 async function ensureBaseNodes(db) {
-    const ref = db.ref();
-    const snapshot = await ref.once("value");
-    const root = snapshot.val() || {};
+    const rootSnapshot = await db.ref().once("value");
+    const root = rootSnapshot.val() || {};
     const updates = {};
 
     if (!root.settings || typeof root.settings !== "object") {
@@ -564,30 +554,43 @@ async function ensureBaseNodes(db) {
         }
     }
 
-    if (!root.sports || typeof root.sports !== "object") {
-        updates.sports = DEFAULT_SPORTS;
+    // Keep sports as an array, matching your Firebase model.
+    if (!Array.isArray(root.sports)) {
+        if (root.sports == null) {
+            updates.sports = DEFAULT_SPORTS;
+        } else {
+            console.log(
+                "Warning: sports is not an array; existing value preserved."
+            );
+        }
     } else {
-        Object.keys(DEFAULT_SPORTS).forEach(function (key) {
-            if (!root.sports[key]) {
-                updates["sports/" + key] = DEFAULT_SPORTS[key];
+        for (let i = 1; i <= 9; i++) {
+            if (!root.sports[i]) {
+                updates["sports/" + i] = DEFAULT_SPORTS[i];
             }
-        });
+        }
     }
 
-    if (!root.competitions || typeof root.competitions !== "object") {
+    if (!root.competitions ||
+        typeof root.competitions !== "object" ||
+        Array.isArray(root.competitions)) {
         updates.competitions = {};
     }
 
     if (!root.competition_selection ||
-        typeof root.competition_selection !== "object") {
+        typeof root.competition_selection !== "object" ||
+        Array.isArray(root.competition_selection)) {
         updates.competition_selection = {};
     }
 
-    if (!root.matches || typeof root.matches !== "object") {
+    if (!root.matches ||
+        typeof root.matches !== "object" ||
+        Array.isArray(root.matches)) {
         updates.matches = {};
     }
 
-    if (!root.syncSettings || typeof root.syncSettings !== "object") {
+    if (!root.syncSettings ||
+        typeof root.syncSettings !== "object") {
         updates.syncSettings = {
             autoSyncEnabled: true,
             syncIntervalMinutes: 5,
@@ -596,7 +599,7 @@ async function ensureBaseNodes(db) {
     }
 
     if (Object.keys(updates).length > 0) {
-        await ref.update(updates);
+        await db.ref().update(updates);
         console.log("Created missing Firebase nodes.");
     }
 
@@ -642,6 +645,7 @@ function convertGame(game, old) {
         }).format(date);
     }
 
+    // Merge old data first to preserve admin-managed fields.
     const match = Object.assign({}, existing, {
         gameId: id,
         apiFixtureId: id,
@@ -709,25 +713,33 @@ function getDatabase() {
 
 async function ensureSports(db, records) {
     const snapshot = await db.ref("sports").once("value");
-    const sports = snapshot.val() || {};
+    const sports = snapshot.val();
+
+    if (!Array.isArray(sports)) {
+        console.log(
+            "Sports node is not an array; existing sports data preserved."
+        );
+        return;
+    }
+
     const updates = {};
 
     records.forEach(function (record) {
-        const id = text(record.sportId);
+        const id = parseInt(record.sportId, 10);
         const name = text(record.sportName);
 
-        if (!id || !name) return;
+        if (!id || id < 1 || id > 9 || !name) return;
 
-        const key = id.length === 1 ? "0" + id : id;
+        const existing = sports[id];
 
-        if (!sports[key]) {
-            const defaults = DEFAULT_SPORTS[key] || {};
+        if (!existing) {
+            const defaults = DEFAULT_SPORTS[id] || {};
 
-            updates["sports/" + key] = Object.assign(
+            updates["sports/" + id] = Object.assign(
                 {},
                 defaults,
                 {
-                    id: Number(id),
+                    id: id,
                     name: name
                 }
             );
@@ -756,6 +768,7 @@ async function ensureCompetitions(db, records) {
         if (!id) return;
 
         const old = oldCompetitions[id] || {};
+
         const hasSelection = Object.prototype.hasOwnProperty.call(
             oldSelections,
             id
@@ -765,6 +778,7 @@ async function ensureCompetitions(db, records) {
             ? normalizeBoolean(oldSelections[id])
             : normalizeBoolean(old.selected);
 
+        // Preserve existing competition metadata.
         const comp = Object.assign({}, old, {
             id: record.competitionId,
             name: record.competitionName ||
@@ -776,6 +790,7 @@ async function ensureCompetitions(db, records) {
 
         updates["competitions/" + id] = comp;
 
+        // Initialize selection only if this Firebase key does not exist.
         if (!hasSelection) {
             updates["competition_selection/" + id] = selected;
         }
@@ -815,6 +830,7 @@ async function main() {
     const allGames = [];
     const seen = {};
 
+    // Fetch all dates before writing any matches.
     for (let i = 0; i < dates.length; i++) {
         console.log("Fetching:", dates[i]);
 
@@ -858,12 +874,14 @@ async function main() {
     const result = await ensureCompetitions(db, records);
     const selections = result.selections || {};
 
+    // Read selected IDs from Firebase.
     const selectedCompetitionIds = Object.keys(selections).filter(
         function (id) {
             return normalizeBoolean(selections[id]);
         }
     );
 
+    // Log the API IDs to detect mismatches with Firebase keys.
     const apiCompetitionIds = Array.from(
         new Set(
             records.map(function (record) {
@@ -872,8 +890,15 @@ async function main() {
         )
     );
 
-    console.log("Selected competition IDs:", selectedCompetitionIds);
-    console.log("Competition IDs in API:", apiCompetitionIds);
+    console.log(
+        "Selected competition IDs in Firebase:",
+        JSON.stringify(selectedCompetitionIds)
+    );
+
+    console.log(
+        "Competition IDs found in API:",
+        JSON.stringify(apiCompetitionIds)
+    );
 
     const selectedIdSet = {};
 
@@ -882,8 +907,7 @@ async function main() {
     });
 
     const selectedRecords = records.filter(function (record) {
-        const id = cleanKey(record.competitionId);
-        return selectedIdSet[id] === true;
+        return selectedIdSet[cleanKey(record.competitionId)] === true;
     });
 
     console.log("Games fetched:", allGames.length);
@@ -892,13 +916,21 @@ async function main() {
 
     if (selectedRecords.length === 0) {
         console.log(
-            "No selected competitions found. Existing matches unchanged."
+            "No API competition IDs matched Firebase selections. Existing matches unchanged."
         );
+
+        await db.ref("syncSettings").update({
+            lastSyncProvider: PROVIDER,
+            lastSyncStatus: "no_matching_selected_competitions",
+            lastSyncGamesFetched: allGames.length,
+            lastSyncValidGames: records.length,
+            lastSyncMatchesSaved: 0
+        });
+
         return;
     }
 
-    const matchesRef = db.ref("matches");
-    const matchesSnapshot = await matchesRef.once("value");
+    const matchesSnapshot = await db.ref("matches").once("value");
     const existingMatches = matchesSnapshot.val() || {};
     const updates = {};
 
@@ -930,6 +962,7 @@ async function main() {
         return;
     }
 
+    // Only update selected matches. Never delete old matches here.
     await db.ref().update(updates);
 
     const successTime = timestamp();
@@ -947,6 +980,7 @@ async function main() {
     console.log("Sync completed successfully.");
     console.log("Provider:", PROVIDER);
     console.log("Games fetched:", allGames.length);
+    console.log("Valid games:", records.length);
     console.log("Matches saved:", savedCount);
     console.log("====================================");
 }
