@@ -4,255 +4,250 @@
 const axios = require("axios");
 
 const API_URL = "https://webws.365scores.com/web/games/";
-const IMAGE_URL =
-    "https://imagecache.365scores.com/image/upload/f_auto,w_120,h_120,c_limit,q_auto:eco/v2/competitors/";
+const TIME_ZONE = "Asia/Kolkata";
 
-function formatApiDate(isoDate) {
-    const p = isoDate.split("-");
-    return p[2] + "/" + p[1] + "/" + p[0];
+function formatDate(dateString) {
+    const parts = dateString.split("-");
+    return parts[2] + "/" + parts[1] + "/" + parts[0];
 }
 
-function toMillis(value) {
-    if (value == null) return 0;
+function getSports(settings) {
+    const selected = settings.selected_sports;
 
-    if (typeof value === "number") {
-        return value < 100000000000 ? value * 1000 : value;
+    if (Array.isArray(selected)) {
+        const ids = selected
+            .map(Number)
+            .filter(Number.isFinite);
+
+        if (ids.length) return ids;
     }
 
-    const n = Number(value);
-    if (Number.isFinite(n) && n > 0) {
-        return n < 100000000000 ? n * 1000 : n;
+    if (selected && typeof selected === "object") {
+        const ids = Object.keys(selected)
+            .filter(function (key) {
+                return selected[key] === true;
+            })
+            .map(Number)
+            .filter(Number.isFinite);
+
+        if (ids.length) return ids;
     }
 
-    const parsed = new Date(value).getTime();
-    return Number.isFinite(parsed) ? parsed : 0;
+    return [Number(settings.selected_sport) || 1];
 }
 
-function formatDateTime(millis, timezone) {
-    const date = new Date(millis || Date.now());
-
-    const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: timezone,
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric"
-    }).formatToParts(date);
-
-    const v = {};
-    parts.forEach(function (p) {
-        v[p.type] = p.value;
-    });
-
-    return {
-        date: v.day + "-" + v.month + "-" + v.year,
-        time: new Intl.DateTimeFormat("en-GB", {
-            timeZone: timezone,
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: false
-        }).format(date)
-    };
-}
-
-function getStatus(game) {
-    const raw = String(
-        game.statusText ||
-        game.status ||
-        game.gameStatus ||
-        ""
-    ).toUpperCase();
-
-    if (raw.indexOf("POSTPON") >= 0 || raw === "PPD") {
-        return ["Postponed", "PPD"];
-    }
-
-    if (raw.indexOf("CANCEL") >= 0 || raw === "CANC") {
-        return ["Cancelled", "CANC"];
-    }
-
-    if (raw.indexOf("ABANDON") >= 0 || raw === "ABD") {
-        return ["Abandoned", "ABD"];
-    }
-
-    if (raw.indexOf("PEN") >= 0) return ["Penalties", "AP"];
-    if (raw === "HT" || raw.indexOf("HALF TIME") >= 0) {
-        return ["Half Time", "HT"];
-    }
-
-    if (
-        raw === "FT" ||
-        raw.indexOf("FINISHED") >= 0 ||
-        raw.indexOf("ENDED") >= 0
-    ) {
-        return ["Finished", "FT"];
-    }
-
-    const minute = Number(
-        game.gameTime || game.currentPeriod || game.minute
-    );
-
-    if (
-        game.isLive === true ||
-        game.statusGroup === "LIVE" ||
-        (Number.isFinite(minute) && minute > 0 && raw !== "FT")
-    ) {
-        return ["Live", raw || "LIVE"];
-    }
-
-    return [game.statusText || "Upcoming", raw || "NS"];
-}
-
-async function fetch(isoDate, options) {
+async function fetch(date, options) {
     const settings = options.settings || {};
-    const selectedParser = settings.selected_parser || "parse1";
-    const parser = settings.parse && settings.parse[selectedParser]
-        ? settings.parse[selectedParser] : {};
+    const parserSettings =
+        settings.parse &&
+        settings.selected_parser &&
+        settings.parse[settings.selected_parser]
+            ? settings.parse[settings.selected_parser]
+            : {};
 
-    const configuredUrl = parser.api_url || settings.api_url || API_URL;
+    const apiUrl = parserSettings.api_url ||
+        settings.api_url ||
+        API_URL;
 
-    const sportsSetting = settings.selected_sports;
-    let sportIds = [];
+    const sports = getSports(settings);
+    const allGames = [];
 
-    if (Array.isArray(sportsSetting)) {
-        sportIds = sportsSetting;
-    } else if (sportsSetting && typeof sportsSetting === "object") {
-        sportIds = Object.keys(sportsSetting).filter(function (id) {
-            return sportsSetting[id] === true;
-        });
-    }
-
-    if (!sportIds.length) {
-        sportIds = [settings.selected_sport || 1];
-    }
-
-    const startDate = formatApiDate(isoDate);
-
-    const dateObject = new Date(isoDate + "T00:00:00Z");
-    dateObject.setUTCDate(dateObject.getUTCDate() + 1);
-
-    const endDate = formatApiDate(
-        dateObject.toISOString().slice(0, 10)
-    );
-
-    const results = [];
-
-    for (const sportId of sportIds) {
-        const response = await axios.get(configuredUrl, {
+    for (const sportId of sports) {
+        const response = await axios.get(apiUrl, {
             timeout: 30000,
-            headers: {
-                "User-Agent":
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
-                "Accept": "application/json",
-                "Referer": "https://www.365scores.com/",
-                "Origin": "https://www.365scores.com"
-            },
             params: {
                 appTypeId: 5,
                 langId: 1,
-                timezoneName: options.timezone,
+                timezoneName: options.timezone || TIME_ZONE,
                 userCountryId: 113,
                 sports: sportId,
-                startDate: startDate,
-                endDate: endDate,
+                startDate: formatDate(date),
+                endDate: formatDate(date),
                 showOdds: true,
                 onlyMajorGames: false,
                 withTop: true
+            },
+            headers: {
+                "User-Agent":
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Referer": "https://www.365scores.com/",
+                "Origin": "https://www.365scores.com"
             }
         });
 
         const data = response.data || {};
 
         if (!Array.isArray(data.games)) {
-            throw new Error("365Scores response has no games array");
+            throw new Error(
+                "365Scores response did not contain games array"
+            );
         }
 
-        results.push.apply(results, data.games);
+        allGames.push.apply(allGames, data.games);
     }
 
-    return results;
+    return allGames;
+}
+
+function getTimestamp(game) {
+    const value =
+        game.startTime ||
+        game.startTimestamp ||
+        game.startDate ||
+        game.date;
+
+    if (typeof value === "number") {
+        return value < 1000000000000 ? value * 1000 : value;
+    }
+
+    if (value) {
+        const parsed = Date.parse(value);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+
+    return 0;
+}
+
+function getStatus(game) {
+    const statusObj = game.status || {};
+    const statusText = String(
+        statusObj.name ||
+        statusObj.longName ||
+        game.statusText ||
+        game.statusDescription ||
+        ""
+    );
+
+    const upper = statusText.toUpperCase();
+    const gameStatus = Number(game.statusGroup || game.statusId || 0);
+
+    if (upper.indexOf("POSTPON") >= 0) return ["PPD", "PPD"];
+    if (upper.indexOf("CANCEL") >= 0) return ["CANC", "CANC"];
+    if (upper.indexOf("ABANDON") >= 0) return ["ABD", "ABD"];
+    if (upper.indexOf("HALF") >= 0) return ["HT", "HT"];
+    if (upper.indexOf("FINISHED") >= 0 ||
+        upper === "FT" ||
+        upper.indexOf("ENDED") >= 0) {
+        return ["FT", "FT"];
+    }
+
+    if (
+        gameStatus === 2 ||
+        gameStatus === 3 ||
+        upper.indexOf("LIVE") >= 0 ||
+        upper.indexOf("IN PLAY") >= 0
+    ) {
+        return ["LIVE", "LIVE"];
+    }
+
+    return ["UPCOMING", "NS"];
 }
 
 function normalize(game) {
-    const id = game.id;
-    if (id == null) return null;
+    const competitors = Array.isArray(game.competitors)
+        ? game.competitors
+        : [];
 
-    const home = game.homeCompetitor || {};
-    const away = game.awayCompetitor || {};
+    const home = competitors.find(function (team) {
+        return String(team.position || team.qualifier || "")
+            .toLowerCase() === "home";
+    }) || competitors[0] || {};
 
-    const millis = toMillis(
-        game.startTime || game.startTimestamp || game.timestamp
-    );
-
-    const formatted = formatDateTime(millis, "Asia/Kolkata");
-
-    const homeScore = home.score;
-    const awayScore = away.score;
-
-    const scoresAvailable =
-        homeScore != null && awayScore != null;
-
-    const status = getStatus(game);
+    const away = competitors.find(function (team) {
+        return String(team.position || team.qualifier || "")
+            .toLowerCase() === "away";
+    }) || competitors[1] || {};
 
     const competition = game.competition || {};
+    const country = game.country || {};
+    const timestamp = getTimestamp(game);
+    const status = getStatus(game);
 
-    const homeId = home.id;
-    const awayId = away.id;
+    const homeName =
+        home.name ||
+        home.shortName ||
+        home.competitorName ||
+        "";
+
+    const awayName =
+        away.name ||
+        away.shortName ||
+        away.competitorName ||
+        "";
+
+    const homeScore = home.score != null
+        ? home.score
+        : home.currentScore;
+
+    const awayScore = away.score != null
+        ? away.score
+        : away.currentScore;
+
+    const hasScore =
+        homeScore != null && awayScore != null;
 
     return {
-        gameId: String(id),
-        fixtureId: String(id),
-        apiFixtureId: String(id),
+        gameId: String(game.id || game.gameId || ""),
+        fixtureId: String(game.id || game.gameId || ""),
+        apiFixtureId: String(game.id || game.gameId || ""),
         apiProvider: "365scores",
-
-        sportId: Number(game.sportId || 1),
+        sportId: Number(game.sportId || game.sport || 1),
         competitionId: String(
             game.competitionId ||
             competition.id ||
             ""
         ),
-
-        league: String(
+        league:
             game.competitionDisplayName ||
             game.competitionName ||
             competition.name ||
-            "Unknown Competition"
-        ),
-
-        country: String(
-            game.countryName ||
-            (competition.country || {}).name ||
-            ""
-        ),
-
-        home: String(home.name || "Home"),
-        away: String(away.name || "Away"),
-
-        homeLogo: homeId ? IMAGE_URL + homeId + ".png" : "",
-        awayLogo: awayId ? IMAGE_URL + awayId + ".png" : "",
-
-        homeScore: scoresAvailable ? homeScore : null,
-        awayScore: scoresAvailable ? awayScore : null,
-
-        score: scoresAvailable
-            ? homeScore + " - " + awayScore
+            "Unknown competition",
+        country: country.name || game.countryName || "",
+        season: "",
+        home: homeName,
+        away: awayName,
+        homeLogo:
+            home.imageVersion
+                ? "https://imagecache.365scores.com/image/upload/f_auto,w_120,h_120,c_limit,q_auto:eco/v2/competitors/" +
+                  home.id
+                : "",
+        awayLogo:
+            away.imageVersion
+                ? "https://imagecache.365scores.com/image/upload/f_auto,w_120,h_120,c_limit,q_auto:eco/v2/competitors/" +
+                  away.id
+                : "",
+        homeScore: homeScore == null ? null : Number(homeScore),
+        awayScore: awayScore == null ? null : Number(awayScore),
+        score: hasScore
+            ? String(homeScore) + " - " + String(awayScore)
             : "VS",
-
         status: status[0],
         shortStatus: status[1],
-
-        date: formatted.date,
-        time: formatted.time,
-        timestamp: Math.floor(millis / 1000),
-        matchTimeMillis: millis,
-
-        stadium: String(
+        elapsed: game.time || game.minute || "",
+        date: timestamp
+            ? new Intl.DateTimeFormat("en-GB", {
+                  timeZone: TIME_ZONE,
+                  day: "2-digit",
+                  month: "2-digit",
+                  year: "numeric"
+              }).format(new Date(timestamp))
+            : "",
+        time: timestamp
+            ? new Intl.DateTimeFormat("en-GB", {
+                  timeZone: TIME_ZONE,
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: false
+              }).format(new Date(timestamp))
+            : "",
+        timestamp: timestamp,
+        matchTimeMillis: timestamp,
+        stadium:
+            (game.venue && game.venue.name) ||
             game.venueName ||
-            (game.venue || {}).name ||
-            ""
-        ),
-
-        streamUrl: "",
-        updatedAt: Date.now()
+            "",
+        streamUrl: ""
     };
 }
 
