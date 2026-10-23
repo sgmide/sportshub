@@ -1,3 +1,4 @@
+
 "use strict";
 
 const admin = require("firebase-admin");
@@ -10,28 +11,21 @@ const FETCH_DATES = [-1, 0, 1];
 function initializeFirebase() {
     if (admin.apps.length) return;
 
-    const serviceAccountJson =
-        process.env.FIREBASE_SERVICE_ACCOUNT;
-
-    const databaseURL =
-        process.env.FIREBASE_DATABASE_URL;
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const databaseURL = process.env.FIREBASE_DATABASE_URL;
 
     if (!serviceAccountJson || !databaseURL) {
         throw new Error("Firebase secrets are missing.");
     }
 
     admin.initializeApp({
-        credential: admin.credential.cert(
-            JSON.parse(serviceAccountJson)
-        ),
+        credential: admin.credential.cert(JSON.parse(serviceAccountJson)),
         databaseURL: databaseURL
     });
 }
 
 function normalizeProviderName(value) {
-    const name = String(value || "")
-        .trim()
-        .toLowerCase();
+    const name = String(value || "").trim().toLowerCase();
 
     if (name === "365" || name === "365scores") {
         return "365scores";
@@ -46,17 +40,12 @@ function normalizeProviderName(value) {
         return "api-football";
     }
 
-    throw new Error(
-        "Unsupported API provider: " + name
-    );
+    throw new Error("Unsupported API provider: " + name);
 }
 
 function getProviderName(settings) {
     const parserName = settings.selected_parser;
-
-    const parser =
-        settings.parse &&
-        settings.parse[parserName];
+    const parser = settings.parse && settings.parse[parserName];
 
     const configuredName =
         process.env.API_PROVIDER ||
@@ -68,7 +57,6 @@ function getProviderName(settings) {
 
 function getDate(offset) {
     const date = new Date();
-
     date.setUTCDate(date.getUTCDate() + offset);
 
     const parts = new Intl.DateTimeFormat("en-CA", {
@@ -84,40 +72,39 @@ function getDate(offset) {
         values[part.type] = part.value;
     });
 
-    return values.year + "-" +
-        values.month + "-" +
-        values.day;
+    return values.year + "-" + values.month + "-" + values.day;
 }
 
+/*
+ * Read old match data only.
+ * availableMatches is not used.
+ */
 function getOldMatchMap(root) {
     const result = {};
+    const records = root.matches || {};
 
-    ["matches", "availableMatches"].forEach(function (node) {
-        const records = root[node] || {};
+    Object.keys(records).forEach(function (key) {
+        const match = records[key];
 
-        Object.keys(records).forEach(function (key) {
-            const match = records[key];
+        if (!match || typeof match !== "object") {
+            return;
+        }
 
-            if (!match || typeof match !== "object") {
-                return;
+        const id = match.gameId != null
+            ? String(match.gameId)
+            : key;
+
+        if (!result[id]) {
+            result[id] = {};
+        }
+
+        Object.keys(match).forEach(function (field) {
+            if (
+                result[id][field] == null ||
+                result[id][field] === ""
+            ) {
+                result[id][field] = match[field];
             }
-
-            const id = match.gameId != null
-                ? String(match.gameId)
-                : key;
-
-            if (!result[id]) {
-                result[id] = {};
-            }
-
-            Object.keys(match).forEach(function (field) {
-                if (
-                    result[id][field] == null ||
-                    result[id][field] === ""
-                ) {
-                    result[id][field] = match[field];
-                }
-            });
         });
     });
 
@@ -129,11 +116,9 @@ function getSelectedSports(settings) {
     const ids = [];
 
     if (Array.isArray(configured)) {
-        const containsBoolean = configured.some(
-            function (value) {
-                return typeof value === "boolean";
-            }
-        );
+        const containsBoolean = configured.some(function (value) {
+            return typeof value === "boolean";
+        });
 
         if (containsBoolean) {
             configured.forEach(function (value, index) {
@@ -184,10 +169,7 @@ function normalizeGameId(match) {
         return null;
     }
 
-    if (
-        match.gameId != null &&
-        String(match.gameId) !== ""
-    ) {
+    if (match.gameId != null && String(match.gameId) !== "") {
         return String(match.gameId);
     }
 
@@ -198,10 +180,7 @@ function normalizeGameId(match) {
         return String(match.apiFixtureId);
     }
 
-    if (
-        match.id != null &&
-        String(match.id) !== ""
-    ) {
+    if (match.id != null && String(match.id) !== "") {
         return String(match.id);
     }
 
@@ -211,7 +190,9 @@ function normalizeGameId(match) {
 function normalizeMatch(match) {
     const id = normalizeGameId(match);
 
-    if (!id) return null;
+    if (!id) {
+        return null;
+    }
 
     const normalized = Object.assign({}, match);
     normalized.gameId = id;
@@ -225,18 +206,16 @@ function mergeMatches(matches) {
     matches.forEach(function (item) {
         const match = normalizeMatch(item);
 
-        if (!match) return;
+        if (!match) {
+            return;
+        }
 
         const id = match.gameId;
 
         if (!unique[id]) {
             unique[id] = match;
         } else {
-            unique[id] = Object.assign(
-                {},
-                unique[id],
-                match
-            );
+            unique[id] = Object.assign({}, unique[id], match);
         }
     });
 
@@ -268,29 +247,29 @@ async function fetchProviderMatches(
             };
 
             if (providerName === "365scores") {
-                options.sportIds =
-                    getSelectedSports(settings);
+                options.sportIds = getSelectedSports(settings);
             }
 
             results = await provider.fetchMatches(options);
-
         } catch (error) {
             throw new Error(
                 "API request failed for " +
-                date + ": " + error.message
+                date +
+                ": " +
+                error.message
             );
         }
 
         if (!Array.isArray(results)) {
             throw new Error(
-                "Invalid API response for " + date +
+                "Invalid API response for " +
+                date +
                 ". Expected an array."
             );
         }
 
         console.log(
-            "Fetched " + results.length +
-            " matches for " + date
+            "Fetched " + results.length + " matches for " + date
         );
 
         fetched.push.apply(fetched, results);
@@ -314,8 +293,7 @@ async function main() {
     const selectedParser = settings.selected_parser;
 
     const parserSettings =
-        settings.parse &&
-        settings.parse[selectedParser]
+        settings.parse && settings.parse[selectedParser]
             ? settings.parse[selectedParser]
             : {};
 
@@ -326,36 +304,24 @@ async function main() {
         ? normalizeProviderName(previousProviderValue)
         : null;
 
-    const providerChanged =
-        oldProvider !== null &&
+    const providerChanged = oldProvider !== null &&
         oldProvider !== providerName;
 
     console.log("Current provider:", providerName);
-    console.log(
-        "Previous provider:",
-        oldProvider || "not recorded"
-    );
+    console.log("Previous provider:", oldProvider || "not recorded");
     console.log("Provider changed:", providerChanged);
 
     const provider = require(
-        path.join(
-            __dirname,
-            "apis",
-            providerName + ".js"
-        )
+        path.join(__dirname, "apis", providerName + ".js")
     );
 
-    if (
-        !provider ||
-        typeof provider.fetchMatches !== "function"
-    ) {
+    if (!provider || typeof provider.fetchMatches !== "function") {
         throw new Error(
             "Provider must export fetchMatches(options): " +
             providerName
         );
     }
 
-    // Fetch all dates before modifying Firebase.
     const newMatches = await fetchProviderMatches(
         provider,
         providerName,
@@ -363,51 +329,60 @@ async function main() {
         parserSettings
     );
 
+    /*
+     * Protect existing Firebase data if the API unexpectedly
+     * returns no valid matches.
+     */
     if (!newMatches.length) {
         throw new Error(
-            "No valid matches fetched. Existing Firebase " +
-            "data was not changed."
+            "No valid matches fetched. Existing Firebase data was not changed."
         );
     }
 
     const oldMatchMap = getOldMatchMap(root);
 
-    // API changed: start with fresh competition data.
-    // Same API: retain existing competition and selection data.
+    /*
+     * Preserve existing competitions and selections unless
+     * the API provider has changed.
+     */
     const competitions = providerChanged
         ? {}
         : Object.assign({}, root.competitions || {});
 
     const selection = providerChanged
         ? {}
-        : Object.assign(
-            {},
-            root.competition_selection || {}
-        );
+        : Object.assign({}, root.competition_selection || {});
 
-    const availableMatches = {};
+    /*
+     * This is the only match collection written to Firebase.
+     * There is no availableMatches collection.
+     */
+    const selectedMatches = {};
 
-    newMatches.forEach(function (match) {
+    newMatches.forEach(function (item) {
+        const match = Object.assign({}, item);
         const id = String(match.gameId);
+
         const old = oldMatchMap[id] || {};
 
-        // Preserve stream URL only when the provider is unchanged.
-        if (
-            !providerChanged &&
-            old.streamUrl &&
-            !match.streamUrl
-        ) {
+        // Preserve the admin's stream URL when the API
+        // response does not contain one.
+        if (!providerChanged && old.streamUrl && !match.streamUrl) {
             match.streamUrl = old.streamUrl;
         }
 
-        const competitionId =
-            normalizeCompetitionId(match);
+        const competitionId = normalizeCompetitionId(match);
 
+        /*
+         * Register competitions so the Admin app can display
+         * them, even when they are not currently selected.
+         */
         if (competitionId !== "0") {
             if (!competitions[competitionId]) {
                 competitions[competitionId] = {
                     id: Number(competitionId),
                     name: match.competitionName ||
+                        match.league ||
                         "Unknown Competition",
                     selected: false,
                     sportId: match.sportId == null
@@ -428,8 +403,13 @@ async function main() {
                 }
 
                 if (
-                    competitions[competitionId].sportId == null
+                    !competitions[competitionId].name &&
+                    match.league
                 ) {
+                    competitions[competitionId].name = match.league;
+                }
+
+                if (competitions[competitionId].sportId == null) {
                     competitions[competitionId].sportId =
                         match.sportId == null
                             ? 1
@@ -437,8 +417,10 @@ async function main() {
                 }
             }
 
-            // On provider change, selection starts fresh.
-            // Default new competitions to unselected.
+            /*
+             * Preserve the existing competition_selection value.
+             * New competitions default to false.
+             */
             if (selection[competitionId] == null) {
                 selection[competitionId] =
                     competitions[competitionId].selected === true;
@@ -446,23 +428,14 @@ async function main() {
 
             competitions[competitionId].selected =
                 selection[competitionId] === true;
-        }
 
-        availableMatches[id] = Object.assign({}, match);
-    });
-
-    const selectedMatches = {};
-
-    Object.keys(availableMatches).forEach(function (id) {
-        const match = availableMatches[id];
-        const competitionId =
-            normalizeCompetitionId(match);
-
-        if (
-            competitionId === "0" ||
-            selection[competitionId] === true
-        ) {
-            selectedMatches[id] = match;
+            /*
+             * Add a match only when its competition is selected.
+             * Competitions without a valid ID are excluded.
+             */
+            if (selection[competitionId] === true) {
+                selectedMatches[id] = match;
+            }
         }
     });
 
@@ -472,26 +445,27 @@ async function main() {
         lastSyncDate: new Date().toISOString()
     });
 
-    // Replace these nodes atomically after successful fetching.
-    // Old match and competition records absent from the new
-    // API results will be removed from these nodes.
     const updates = {
-        availableMatches: availableMatches,
         matches: selectedMatches,
         competitions: competitions,
         competition_selection: selection,
-        settings: updatedSettings
+        settings: updatedSettings,
+
+        // Remove the old node if it exists.
+        availableMatches: null
     };
 
     if (providerChanged) {
         console.log(
-            "Provider changed from " + oldProvider +
-            " to " + providerName
+            "Provider changed from " +
+            oldProvider +
+            " to " +
+            providerName
         );
 
         console.log(
-            "Old matches, competitions and competition " +
-            "selections will be replaced."
+            "Old matches, competitions and competition selections " +
+            "will be replaced."
         );
     }
 
@@ -499,19 +473,17 @@ async function main() {
 
     console.log("Provider:", providerName);
     console.log("Provider changed:", providerChanged);
-    console.log("Unique matches:", newMatches.length);
+    console.log("Fetched unique matches:", newMatches.length);
     console.log(
-        "Selected matches:",
+        "Selected matches saved:",
         Object.keys(selectedMatches).length
     );
-    console.log(
-        "Competitions:",
-        Object.keys(competitions).length
-    );
+    console.log("Competitions:", Object.keys(competitions).length);
     console.log(
         "Competition selections:",
         Object.keys(selection).length
     );
+
     console.log("Firebase sync completed successfully.");
 }
 
