@@ -14,7 +14,7 @@ function initFirebase() {
             process.env.FIREBASE_SERVICE_ACCOUNT || "{}"
         );
 
-        if (Object.keys(serviceAccount).length === 0) {
+        if (!Object.keys(serviceAccount).length) {
             throw new Error("FIREBASE_SERVICE_ACCOUNT is missing");
         }
 
@@ -29,24 +29,19 @@ function initFirebase() {
 
 function requestJson(url, apiKey) {
     return new Promise(function (resolve, reject) {
-        const request = https.get(url, {
-            headers: {
-                "x-apisports-key": apiKey
-            },
+        const req = https.get(url, {
+            headers: { "x-apisports-key": apiKey },
             timeout: 30000
-        }, function (response) {
+        }, function (res) {
             let body = "";
 
-            response.on("data", function (chunk) {
+            res.on("data", function (chunk) {
                 body += chunk;
             });
 
-            response.on("end", function () {
-                if (response.statusCode < 200 ||
-                    response.statusCode >= 300) {
-                    reject(new Error(
-                        "API-Football HTTP " + response.statusCode
-                    ));
+            res.on("end", function () {
+                if (res.statusCode < 200 || res.statusCode >= 300) {
+                    reject(new Error("API-Football HTTP " + res.statusCode));
                     return;
                 }
 
@@ -63,17 +58,17 @@ function requestJson(url, apiKey) {
                     }
 
                     resolve(json);
-                } catch (error) {
+                } catch (e) {
                     reject(new Error("Invalid API-Football JSON"));
                 }
             });
         });
 
-        request.on("timeout", function () {
-            request.destroy(new Error("API-Football request timeout"));
+        req.on("timeout", function () {
+            req.destroy(new Error("API-Football request timeout"));
         });
 
-        request.on("error", reject);
+        req.on("error", reject);
     });
 }
 
@@ -97,28 +92,88 @@ function getDate(offset) {
     return values.year + "-" + values.month + "-" + values.day;
 }
 
-function getShortStatus(short, elapsed) {
-    const status = String(short || "NS").toUpperCase();
+function formatDateTime(timestamp) {
+    const date = new Date(timestamp);
 
-    if (["1H", "2H", "HT", "ET", "P", "LIVE", "BT",
-         "INT", "SUSP", "PEN"].indexOf(status) !== -1) {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: TIME_ZONE,
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric"
+    }).formatToParts(date);
+
+    const values = {};
+
+    parts.forEach(function (part) {
+        values[part.type] = part.value;
+    });
+
+    const dateText =
+        values.day + "-" + values.month + "-" + values.year;
+
+    const timeText = new Intl.DateTimeFormat("en-GB", {
+        timeZone: TIME_ZONE,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+    }).format(date);
+
+    return {
+        date: dateText,
+        time: timeText
+    };
+}
+
+function getShortStatus(short, elapsed) {
+    const code = String(short || "NS").toUpperCase();
+
+    const liveCodes = [
+        "1H", "2H", "HT", "ET", "P", "BT",
+        "INT", "LIVE", "SUSP"
+    ];
+
+    if (liveCodes.indexOf(code) !== -1) {
         return {
             status: elapsed !== null && elapsed !== undefined
-                ? String(elapsed)
-                : status,
+                ? String(elapsed) + "'"
+                : code,
             shortStatus: "LIVE"
         };
     }
 
-    if (status === "FT" || status === "AET" || status === "PEN") {
-        return { status: status, shortStatus: status };
+    if (code === "FT" || code === "AET" || code === "PEN") {
+        return {
+            status: code,
+            shortStatus: code
+        };
     }
 
-    return { status: status, shortStatus: status };
+    if (code === "PST") {
+        return { status: "Postponed", shortStatus: "PST" };
+    }
+
+    if (code === "CANC") {
+        return { status: "Cancelled", shortStatus: "CANC" };
+    }
+
+    if (code === "ABD") {
+        return { status: "Abandoned", shortStatus: "ABD" };
+    }
+
+    if (code === "NS") {
+        return { status: "NS", shortStatus: "NS" };
+    }
+
+    if (code === "AWD" || code === "WO") {
+        return { status: code, shortStatus: code };
+    }
+
+    return { status: code, shortStatus: code };
 }
 
 async function fetchFixtures(date, apiKey) {
-    const url = API_URL + "?date=" + encodeURIComponent(date) +
+    const url = API_URL +
+        "?date=" + encodeURIComponent(date) +
         "&timezone=" + encodeURIComponent(TIME_ZONE);
 
     const json = await requestJson(url, apiKey);
@@ -134,32 +189,45 @@ async function main() {
 
     const db = initFirebase();
 
-    const selectionSnapshot = await db.ref("competition_selection")
-        .once("value");
-    const selection = selectionSnapshot.val() || {};
+    const results = await Promise.all([
+        db.ref("competitions").once("value"),
+        db.ref("competition_selection").once("value"),
+        db.ref("settings/last_synced_api_provider").once("value"),
+        db.ref("matches").once("value")
+    ]);
 
-    const oldProviderSnapshot = await db.ref(
-        "settings/last_synced_api_provider"
-    ).once("value");
-
-    const oldProvider = String(oldProviderSnapshot.val() || "")
+    const oldCompetitions = results[0].val() || {};
+    const selection = results[1].val() || {};
+    const oldProvider = String(results[2].val() || "")
         .toLowerCase();
+    const oldMatches = results[3].val() || {};
 
     const providerChanged = oldProvider !== PROVIDER;
-    const dates = [getDate(-1), getDate(0), getDate(1)];
+
+    const dates = [
+        getDate(-1),
+        getDate(0),
+        getDate(1)
+    ];
+
+    const fixtureLists = await Promise.all(
+        dates.map(function (date) {
+            return fetchFixtures(date, apiKey);
+        })
+    );
+
     const fixtures = [];
 
-    for (let i = 0; i < dates.length; i++) {
-        const list = await fetchFixtures(dates[i], apiKey);
-
-        list.forEach(function (fixture) {
-            fixtures.push(fixture);
+    fixtureLists.forEach(function (list) {
+        list.forEach(function (item) {
+            fixtures.push(item);
         });
-    }
+    });
 
     if (fixtures.length === 0) {
         throw new Error(
-            "API-Football returned no fixtures. Firebase was not replaced."
+            "API-Football returned no fixtures. " +
+            "Existing Firebase matches were not changed."
         );
     }
 
@@ -173,19 +241,22 @@ async function main() {
         const goals = item.goals || {};
         const statusData = fixture.status || {};
 
-        const fixtureId = fixture.id;
-        const leagueId = league.id;
-
-        if (fixtureId === undefined || leagueId === undefined) {
+        if (fixture.id == null || league.id == null) {
             return;
         }
 
-        const compId = String(leagueId);
-        const selected = selection[compId] === true;
+        const fixtureId = Number(fixture.id);
+        const compId = String(league.id);
+        const oldCompetition = oldCompetitions[compId] || {};
+
+        const selected = !providerChanged && (
+            selection[compId] === true ||
+            oldCompetition.selected === true
+        );
 
         competitions[compId] = {
-            id: compId,
-            sportId: "1",
+            id: Number(league.id),
+            sportId: 1,
             name: league.name || "Competition",
             country: league.country || "",
             logo: league.logo || "",
@@ -202,84 +273,115 @@ async function main() {
             ? Number(fixture.timestamp) * 1000
             : new Date(fixture.date || Date.now()).getTime();
 
+        const dateTime = formatDateTime(timestamp);
+
         const status = getShortStatus(
             statusData.short,
             statusData.elapsed
         );
 
+        const previous = providerChanged
+            ? {}
+            : (oldMatches[String(fixtureId)] || {});
+
+        const homeScore = goals.home == null
+            ? null
+            : Number(goals.home);
+
+        const awayScore = goals.away == null
+            ? null
+            : Number(goals.away);
+
+        let score = "VS";
+
+        if (homeScore !== null && awayScore !== null) {
+            score = homeScore + " - " + awayScore;
+        }
+
         matches[String(fixtureId)] = {
-            gameId: String(fixtureId),
-            apiFixtureId: String(fixtureId),
+            gameId: fixtureId,
+            apiFixtureId: fixtureId,
             apiProvider: PROVIDER,
-            competitionId: compId,
+
+            competitionId: Number(league.id),
             competitionName: league.name || "",
             league: league.name || "",
             season: league.season || "",
             round: league.round || "",
-            homeTeam: teams.home ? teams.home.name : "",
-            awayTeam: teams.away ? teams.away.name : "",
-            homeTeamId: teams.home ? String(teams.home.id || "") : "",
-            awayTeamId: teams.away ? String(teams.away.id || "") : "",
+
+            home: teams.home ? teams.home.name || "" : "",
+            away: teams.away ? teams.away.name || "" : "",
+
+            homeTeam: teams.home ? teams.home.name || "" : "",
+            awayTeam: teams.away ? teams.away.name || "" : "",
+
+            homeTeamId: teams.home && teams.home.id != null
+                ? Number(teams.home.id) : 0,
+            awayTeamId: teams.away && teams.away.id != null
+                ? Number(teams.away.id) : 0,
+
             homeLogo: teams.home ? teams.home.logo || "" : "",
             awayLogo: teams.away ? teams.away.logo || "" : "",
-            homeScore: goals.home === null || goals.home === undefined
-                ? 0 : Number(goals.home),
-            awayScore: goals.away === null || goals.away === undefined
-                ? 0 : Number(goals.away),
+
+            homeScore: homeScore,
+            awayScore: awayScore,
+            score: score,
+
+            date: dateTime.date,
+            time: dateTime.time,
+            stadium: previous.stadium || "",
+
             timestamp: timestamp,
             matchTimeMillis: timestamp,
+
             status: status.status,
             shortStatus: status.shortStatus,
-            streamUrl: "",
-            sportId: "1"
+
+            streamUrl: previous.streamUrl || "",
+            goalEvents: previous.goalEvents,
+            adminNotes: previous.adminNotes,
+
+            sportId: 1
         };
+
+        if (matches[String(fixtureId)].goalEvents === undefined) {
+            delete matches[String(fixtureId)].goalEvents;
+        }
+
+        if (matches[String(fixtureId)].adminNotes === undefined) {
+            delete matches[String(fixtureId)].adminNotes;
+        }
     });
 
     const updates = {};
-    const oldMatchesSnapshot = await db.ref("matches").once("value");
-    const oldMatches = oldMatchesSnapshot.val() || {};
 
     if (providerChanged) {
-        updates["matches"] = matches;
+        // Provider maariyappol pazhaya provider matches neekkum.
+        // Puthiya competitions Admin-il veendum select cheyyanam.
+        updates["matches"] = {};
         updates["competitions"] = competitions;
-
-        const newSelection = {};
+        updates["competition_selection"] = {};
 
         Object.keys(competitions).forEach(function (id) {
-            newSelection[id] = false;
+            updates["competition_selection/" + id] = false;
         });
 
-        updates["competition_selection"] = newSelection;
         updates["settings/last_synced_api_provider"] = PROVIDER;
 
-        console.log("Provider changed. Saved new provider data.");
-        console.log("Matches saved:", Object.keys(matches).length);
-        console.log("Competitions discovered:",
-            Object.keys(competitions).length);
-
         await db.ref().update(updates);
+
+        console.log("Provider changed to API-Football.");
+        console.log("Matches cleared: new competitions need selection.");
+        console.log("Competitions discovered:", Object.keys(competitions).length);
         return;
     }
 
-    Object.keys(matches).forEach(function (id) {
-        const previous = oldMatches[id] || {};
-
-        matches[id].streamUrl = previous.streamUrl || "";
-
-        if (previous.goalEvents !== undefined) {
-            matches[id].goalEvents = previous.goalEvents;
-        }
-
-        if (previous.adminNotes !== undefined) {
-            matches[id].adminNotes = previous.adminNotes;
-        }
-
-        updates["matches/" + id] = matches[id];
-    });
+    // Current fixture window-ile selected matches maathram save cheyyum.
+    // Removed/stale matches automatic-aayi neekkum.
+    updates["matches"] = matches;
+    updates["competitions"] = competitions;
 
     Object.keys(competitions).forEach(function (id) {
-        updates["competitions/" + id] = competitions[id];
-
         if (selection[id] === undefined) {
             updates["competition_selection/" + id] = false;
         }
@@ -287,12 +389,10 @@ async function main() {
 
     updates["settings/last_synced_api_provider"] = PROVIDER;
 
-    if (Object.keys(updates).length > 0) {
-        await db.ref().update(updates);
-    }
+    await db.ref().update(updates);
 
     console.log("API-Football sync completed.");
-    console.log("Selected matches updated:", Object.keys(matches).length);
+    console.log("Selected matches saved:", Object.keys(matches).length);
     console.log("Competitions discovered:", Object.keys(competitions).length);
 }
 
