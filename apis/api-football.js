@@ -1,79 +1,102 @@
+
 "use strict";
 
 const axios = require("axios");
 
 function getApiKey(settings) {
-    return (
-        process.env.API_FOOTBALL_KEY ||
+    settings = settings || {};
+
+    return process.env.API_FOOTBALL_KEY ||
         process.env.APISPORTS_KEY ||
         settings.apiFootballKey ||
-        ""
-    );
+        "";
 }
 
 function getFixturesUrl(parserSettings) {
+    parserSettings = parserSettings || {};
+
     const configured =
         parserSettings.game_api_url ||
         parserSettings.api_url ||
         "https://v3.football.api-sports.io/fixtures";
 
-    const url = configured.replace(/\/+$/, "");
+    const url = String(configured).replace(/\/+$/, "");
 
-    if (/\/fixtures$/i.test(url)) {
-        return url;
-    }
-
-    return url + "/fixtures";
+    return /\/fixtures$/i.test(url)
+        ? url
+        : url + "/fixtures";
 }
 
 function toMillis(value) {
-    if (!value) return 0;
+    if (value == null || value === "") return 0;
+
+    if (typeof value === "number") {
+        return value < 1000000000000
+            ? value * 1000
+            : value;
+    }
 
     const parsed = Date.parse(value);
+
     return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function numberOrZero(value) {
+    if (value == null || value === "") return 0;
+
+    const number = Number(value);
+
+    return Number.isFinite(number) ? number : 0;
+}
+
 function normalize(fixture) {
-    const id = fixture.fixture && fixture.fixture.id;
+    if (!fixture || !fixture.fixture ||
+            fixture.fixture.id == null) {
+        return null;
+    }
 
-    if (id == null) return null;
-
-    const fixtureInfo = fixture.fixture || {};
+    const info = fixture.fixture;
     const league = fixture.league || {};
     const teams = fixture.teams || {};
     const goals = fixture.goals || {};
-    const score = fixture.score || {};
+    const scores = fixture.score || {};
     const home = teams.home || {};
     const away = teams.away || {};
-    const statusInfo = fixtureInfo.status || {};
+    const statusInfo = info.status || {};
 
     const status = statusInfo.short || "NS";
     const elapsed = statusInfo.elapsed;
 
+    const liveStatuses = [
+        "1H", "2H", "HT", "ET", "BT",
+        "P", "LIVE"
+    ];
+
     const displayStatus =
-        elapsed != null &&
-        (
-            status === "1H" ||
-            status === "2H" ||
-            status === "ET" ||
-            status === "LIVE"
-        )
+        elapsed != null && liveStatuses.indexOf(status) !== -1
             ? String(elapsed) + "'"
             : status;
 
-    const timestamp = toMillis(fixtureInfo.date);
+    const halftime = scores.halftime || {};
+    const fulltime = scores.fulltime || {};
+    const extratime = scores.extratime || {};
+    const penalty = scores.penalty || {};
+
+    const timestamp = toMillis(info.date);
+
+    const venue = info.venue || {};
 
     return {
-        gameId: Number(id),
-        apiFixtureId: Number(id),
+        gameId: Number(info.id),
+        apiFixtureId: Number(info.id),
         apiProvider: "api-football",
 
-        competitionId: Number(league.id || 0),
+        competitionId: numberOrZero(league.id),
         competitionName: league.name || "",
         sportId: 1,
 
-        homeCompetitorId: Number(home.id || 0),
-        awayCompetitorId: Number(away.id || 0),
+        homeCompetitorId: numberOrZero(home.id),
+        awayCompetitorId: numberOrZero(away.id),
 
         homeTeam: home.name || "Home",
         awayTeam: away.name || "Away",
@@ -81,20 +104,25 @@ function normalize(fixture) {
         homeLogo: home.logo || "",
         awayLogo: away.logo || "",
 
-        homeScore: goals.home == null ? 0 : Number(goals.home),
-        awayScore: goals.away == null ? 0 : Number(goals.away),
+        homeScore: numberOrZero(goals.home),
+        awayScore: numberOrZero(goals.away),
 
-        halftimeHomeScore:
-            score.halftime && score.halftime.home != null
-                ? Number(score.halftime.home)
-                : 0,
+        halftimeHomeScore: numberOrZero(halftime.home),
+        halftimeAwayScore: numberOrZero(halftime.away),
 
-        halftimeAwayScore:
-            score.halftime && score.halftime.away != null
-                ? Number(score.halftime.away)
-                : 0,
+        fulltimeHomeScore: numberOrZero(fulltime.home),
+        fulltimeAwayScore: numberOrZero(fulltime.away),
 
-        goalEvents: [],
+        extratimeHomeScore: numberOrZero(extratime.home),
+        extratimeAwayScore: numberOrZero(extratime.away),
+
+        penaltyHomeScore: numberOrZero(penalty.home),
+        penaltyAwayScore: numberOrZero(penalty.away),
+
+        // Preserve event data when the provider supplies it.
+        goalEvents: Array.isArray(fixture.goalEvents)
+            ? fixture.goalEvents
+            : [],
 
         timestamp: timestamp,
         matchTimeMillis: timestamp,
@@ -103,26 +131,28 @@ function normalize(fixture) {
         shortStatus: status,
 
         round: league.round || "",
-        season: league.season || 0,
-        venue: fixtureInfo.venue
-            ? fixtureInfo.venue.name || ""
-            : "",
+        season: numberOrZero(league.season),
+        venue: venue.name || "",
 
         streamUrl: ""
     };
 }
 
 async function fetchMatches(options) {
+    options = options || {};
+
     const date = options.date;
     const settings = options.settings || {};
     const parserSettings = options.parserSettings || {};
 
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new Error("Invalid date. Expected YYYY-MM-DD");
+    }
+
     const apiKey = getApiKey(settings);
 
     if (!apiKey) {
-        throw new Error(
-            "API_FOOTBALL_KEY secret is missing"
-        );
+        throw new Error("API_FOOTBALL_KEY secret is missing");
     }
 
     const url = getFixturesUrl(parserSettings);
@@ -141,7 +171,8 @@ async function fetchMatches(options) {
 
     const data = response.data || {};
 
-    if (data.errors && Object.keys(data.errors).length) {
+    if (data.errors &&
+            Object.keys(data.errors).length > 0) {
         throw new Error(
             "API-Football error: " +
             JSON.stringify(data.errors)
@@ -149,14 +180,29 @@ async function fetchMatches(options) {
     }
 
     if (!Array.isArray(data.response)) {
-        throw new Error(
-            "Unexpected API-Football response"
-        );
+        throw new Error("Unexpected API-Football response");
     }
 
-    return data.response.map(normalize).filter(function (match) {
-        return match != null;
+    const unique = Object.create(null);
+
+    data.response.forEach(function (fixture) {
+        const match = normalize(fixture);
+
+        if (match) {
+            unique[String(match.gameId)] = match;
+        }
     });
+
+    const matches = Object.keys(unique).map(function (id) {
+        return unique[id];
+    });
+
+    console.log(
+        "API-Football " + date +
+        ": " + matches.length + " fixtures"
+    );
+
+    return matches;
 }
 
 module.exports = {
