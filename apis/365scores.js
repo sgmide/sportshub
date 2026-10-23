@@ -15,21 +15,56 @@ function toMillis(value) {
     if (value == null || value === "") return 0;
 
     if (typeof value === "number") {
-        return value < 1000000000000 ? value * 1000 : value;
+        return value < 1000000000000
+            ? value * 1000
+            : value;
     }
 
     const parsed = Date.parse(value);
+
     return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function getLogo(team) {
     if (!team) return "";
 
-    return team.logo ||
-        team.image ||
+    // Direct image URL ഉണ്ടെങ്കില്‍ ആദ്യം അത് ഉപയോഗിക്കുക.
+    const directLogo =
+        team.logo ||
         team.imageUrl ||
+        team.imageURL ||
         team.logoUrl ||
+        team.logoURL ||
+        team.image ||
         "";
+
+    if (
+        typeof directLogo === "string" &&
+        /^https?:\/\//i.test(directLogo)
+    ) {
+        return directLogo;
+    }
+
+    // 365Scores competitor image URL.
+    const id = team.id;
+    const version = team.imageVersion;
+
+    if (
+        id != null &&
+        version != null &&
+        String(id) !== "" &&
+        String(version) !== ""
+    ) {
+        return (
+            "https://imagecache.365scores.com/image/upload/" +
+            "f_png,w_60,h_60,c_limit,q_auto:eco/" +
+            "v" + encodeURIComponent(String(version)) +
+            "/Competitors/" +
+            encodeURIComponent(String(id))
+        );
+    }
+
+    return "";
 }
 
 function getHomeAway(game) {
@@ -55,7 +90,10 @@ function getHomeAway(game) {
         competitors[1] ||
         {};
 
-    return { home: home, away: away };
+    return {
+        home: home,
+        away: away
+    };
 }
 
 function getStatus(game) {
@@ -77,7 +115,9 @@ function getStatus(game) {
         game.shortStatus ||
         text;
 
-    if (text) return String(text);
+    if (text) {
+        return String(text);
+    }
 
     const minute = Number(game.gameTime);
 
@@ -91,8 +131,13 @@ function getStatus(game) {
 function getScore(team) {
     if (!team) return 0;
 
-    if (team.score != null) return team.score;
-    if (team.currentScore != null) return team.currentScore;
+    if (team.score != null) {
+        return team.score;
+    }
+
+    if (team.currentScore != null) {
+        return team.currentScore;
+    }
 
     return 0;
 }
@@ -105,7 +150,9 @@ function getDateText(timestamp) {
         day: "2-digit",
         month: "2-digit",
         year: "numeric"
-    }).format(new Date(timestamp)).replace(/\//g, "-");
+    })
+        .format(new Date(timestamp))
+        .replace(/\//g, "-");
 }
 
 function getTimeText(timestamp) {
@@ -135,7 +182,10 @@ function normalize(game, requestedSportId) {
     if (rawId == null) return null;
 
     const gameId = Number(rawId);
-    if (!Number.isFinite(gameId) || gameId <= 0) return null;
+
+    if (!Number.isFinite(gameId) || gameId <= 0) {
+        return null;
+    }
 
     const timestamp = toMillis(
         game.startTime ||
@@ -148,7 +198,8 @@ function normalize(game, requestedSportId) {
         game.sportId != null
             ? game.sportId
             : (
-                game.sport && game.sport.id != null
+                game.sport &&
+                game.sport.id != null
                     ? game.sport.id
                     : requestedSportId
             )
@@ -173,25 +224,44 @@ function normalize(game, requestedSportId) {
     );
 
     const homeName = String(
-        home.name || home.shortName || "Home"
+        home.name ||
+        home.shortName ||
+        "Home"
     );
 
     const awayName = String(
-        away.name || away.shortName || "Away"
+        away.name ||
+        away.shortName ||
+        "Away"
     );
 
     const status = getStatus(game);
+
     const homeScore = getScore(home);
     const awayScore = getScore(away);
 
+    const statusLower = status.toLowerCase();
+
     const isUpcoming =
-        status === "NS" ||
-        status.toLowerCase() === "scheduled" ||
-        status.toLowerCase() === "sched.";
+        statusLower === "ns" ||
+        statusLower === "scheduled" ||
+        statusLower === "sched.";
 
     const score = isUpcoming
         ? "VS"
         : String(homeScore) + " - " + String(awayScore);
+
+    const homeLogo = getLogo(home);
+    const awayLogo = getLogo(away);
+
+    // Logo debugging: GitHub Actions log-ല്‍ URL കാണാം.
+    if (!homeLogo || !awayLogo) {
+        console.log(
+            "Logo missing for game " + gameId +
+            ": home=" + homeLogo +
+            ", away=" + awayLogo
+        );
+    }
 
     return {
         gameId: gameId,
@@ -213,8 +283,8 @@ function normalize(game, requestedSportId) {
         homeTeam: homeName,
         awayTeam: awayName,
 
-        homeLogo: getLogo(home),
-        awayLogo: getLogo(away),
+        homeLogo: homeLogo,
+        awayLogo: awayLogo,
 
         homeScore: Number(homeScore || 0),
         awayScore: Number(awayScore || 0),
@@ -223,7 +293,11 @@ function normalize(game, requestedSportId) {
 
         goalEvents: Array.isArray(game.goalEvents)
             ? game.goalEvents
-            : (Array.isArray(game.events) ? game.events : []),
+            : (
+                Array.isArray(game.events)
+                    ? game.events
+                    : []
+            ),
 
         timestamp: timestamp,
         matchTimeMillis: timestamp,
@@ -232,6 +306,7 @@ function normalize(game, requestedSportId) {
         time: getTimeText(timestamp),
 
         status: status,
+
         shortStatus: String(
             game.shortStatusText ||
             game.shortStatus ||
@@ -261,7 +336,9 @@ async function fetchMatches(options) {
     const parserSettings = options.parserSettings || {};
 
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        throw new Error("Invalid date. Expected YYYY-MM-DD");
+        throw new Error(
+            "Invalid date. Expected YYYY-MM-DD"
+        );
     }
 
     const baseUrl = parserSettings.api_url || BASE_URL;
@@ -270,11 +347,13 @@ async function fetchMatches(options) {
         ? options.sportIds
         : [];
 
-    const uniqueSportIds = Array.from(new Set(
-        sportIds.map(Number).filter(function (id) {
-            return Number.isFinite(id) && id > 0;
-        })
-    ));
+    const uniqueSportIds = Array.from(
+        new Set(
+            sportIds.map(Number).filter(function (id) {
+                return Number.isFinite(id) && id > 0;
+            })
+        )
+    );
 
     if (uniqueSportIds.length === 0) {
         throw new Error(
@@ -318,6 +397,7 @@ async function fetchMatches(options) {
 
             data.games.forEach(function (game) {
                 const match = normalize(game, sportId);
+
                 if (!match) return;
 
                 const id = String(match.gameId);
@@ -328,7 +408,10 @@ async function fetchMatches(options) {
                     return;
                 }
 
-                const merged = Object.assign({}, previous);
+                const merged = Object.assign(
+                    {},
+                    previous
+                );
 
                 Object.keys(match).forEach(function (key) {
                     const value = match[key];
@@ -337,17 +420,23 @@ async function fetchMatches(options) {
                         value !== null &&
                         value !== undefined &&
                         value !== "" &&
-                        !(Array.isArray(value) && value.length === 0)
+                        !(
+                            Array.isArray(value) &&
+                            value.length === 0
+                        )
                     ) {
                         merged[key] = value;
                     }
                 });
 
+                // മുമ്പുള്ള goal events നഷ്ടപ്പെടാതിരിക്കുക.
                 if (
                     Array.isArray(previous.goalEvents) &&
                     previous.goalEvents.length > 0 &&
-                    (!Array.isArray(match.goalEvents) ||
-                     match.goalEvents.length === 0)
+                    (
+                        !Array.isArray(match.goalEvents) ||
+                        match.goalEvents.length === 0
+                    )
                 ) {
                     merged.goalEvents = previous.goalEvents;
                 }
@@ -364,7 +453,8 @@ async function fetchMatches(options) {
         } catch (error) {
             console.error(
                 "365Scores error, sport " + sportId +
-                ", date " + date + ": " + error.message
+                ", date " + date +
+                ": " + error.message
             );
 
             throw new Error(
