@@ -38,26 +38,14 @@ function getLogo(competitor) {
         "";
 }
 
-function getStatus(game) {
-    const status = game.status || {};
-
-    const text = typeof status === "string"
-        ? status
-        : (status.shortName || status.name || "");
-
-    const minute = game.gameTime != null
-        ? String(game.gameTime)
-        : "";
-
-    return minute && /^\d+$/.test(minute)
-        ? minute + "'"
-        : String(text || "NS");
-}
-
-function normalize(game, requestedSportId) {
-    const competitors = Array.isArray(game.competitors)
+function getCompetitors(game) {
+    return Array.isArray(game.competitors)
         ? game.competitors
         : [];
+}
+
+function getHomeAway(game) {
+    const competitors = getCompetitors(game);
 
     const home = competitors.find(function (item) {
         return item.isHome === true ||
@@ -70,6 +58,109 @@ function normalize(game, requestedSportId) {
             item.position === "away" ||
             item.qualifier === "away";
     }) || competitors[1] || {};
+
+    return {
+        home: home,
+        away: away
+    };
+}
+
+function getStatus(game) {
+    const status = game.status || {};
+
+    const text = typeof status === "string"
+        ? status
+        : (
+            status.shortName ||
+            status.name ||
+            status.description ||
+            ""
+        );
+
+    const minute = game.gameTime != null
+        ? String(game.gameTime)
+        : "";
+
+    if (minute && /^\d+$/.test(minute)) {
+        return minute + "'";
+    }
+
+    return String(text || "NS");
+}
+
+function getScore(competitor) {
+    if (!competitor) {
+        return 0;
+    }
+
+    if (competitor.score != null) {
+        return competitor.score;
+    }
+
+    if (competitor.currentScore != null) {
+        return competitor.currentScore;
+    }
+
+    return 0;
+}
+
+/*
+ * Preserve goalEvents in the same structure supplied
+ * by the API. Never replace a populated array with [].
+ */
+function getGoalEvents(game) {
+    if (Array.isArray(game.goalEvents)) {
+        return game.goalEvents;
+    }
+
+    if (Array.isArray(game.events)) {
+        return game.events;
+    }
+
+    return [];
+}
+
+function getDateText(timestamp) {
+    if (!timestamp) {
+        return "";
+    }
+
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Kolkata",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric"
+    }).formatToParts(new Date(timestamp));
+
+    const values = {};
+
+    parts.forEach(function (part) {
+        values[part.type] = part.value;
+    });
+
+    return values.day + "-" +
+        values.month + "-" +
+        values.year;
+}
+
+function getTimeText(timestamp) {
+    if (!timestamp) {
+        return "";
+    }
+
+    return new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Kolkata",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true
+    }).format(new Date(timestamp));
+}
+
+function normalize(game, requestedSportId) {
+    const teams = getHomeAway(game);
+
+    const home = teams.home;
+    const away = teams.away;
 
     const competition = game.competition || {};
 
@@ -90,17 +181,8 @@ function normalize(game, requestedSportId) {
 
     const status = getStatus(game);
 
-    const homeScore = home.score != null
-        ? home.score
-        : (home.currentScore != null
-            ? home.currentScore
-            : 0);
-
-    const awayScore = away.score != null
-        ? away.score
-        : (away.currentScore != null
-            ? away.currentScore
-            : 0);
+    const homeScore = getScore(home);
+    const awayScore = getScore(away);
 
     const sportId = game.sportId != null
         ? Number(game.sportId)
@@ -110,29 +192,56 @@ function normalize(game, requestedSportId) {
                 : Number(requestedSportId)
         );
 
+    const competitionId = Number(
+        competition.id != null
+            ? competition.id
+            : (game.competitionId || 0)
+    );
+
+    const competitionName =
+        competition.name ||
+        game.competitionName ||
+        game.league ||
+        "";
+
+    const homeName =
+        home.name ||
+        home.shortName ||
+        "Home";
+
+    const awayName =
+        away.name ||
+        away.shortName ||
+        "Away";
+
+    const goalEvents = getGoalEvents(game);
+
+    const scoreText =
+        status === "NS" ||
+        status === "Scheduled" ||
+        status === "Sched."
+            ? "VS"
+            : String(homeScore) + " - " + String(awayScore);
+
     return {
         gameId: Number(gameId),
         apiFixtureId: Number(gameId),
         apiProvider: "365scores",
 
-        competitionId: Number(
-            competition.id != null
-                ? competition.id
-                : (game.competitionId || 0)
-        ),
-
-        competitionName:
-            competition.name ||
-            game.competitionName ||
-            "",
+        competitionId: competitionId,
+        competitionName: competitionName,
+        league: competitionName,
 
         sportId: sportId,
 
         homeCompetitorId: Number(home.id || 0),
         awayCompetitorId: Number(away.id || 0),
 
-        homeTeam: home.name || home.shortName || "Home",
-        awayTeam: away.name || away.shortName || "Away",
+        home: homeName,
+        away: awayName,
+
+        homeTeam: homeName,
+        awayTeam: awayName,
 
         homeLogo: getLogo(home),
         awayLogo: getLogo(away),
@@ -140,18 +249,22 @@ function normalize(game, requestedSportId) {
         homeScore: Number(homeScore || 0),
         awayScore: Number(awayScore || 0),
 
-        goalEvents: Array.isArray(game.goalEvents)
-            ? game.goalEvents
-            : [],
+        score: scoreText,
+
+        goalEvents: goalEvents,
 
         timestamp: timestamp,
         matchTimeMillis: timestamp,
+
+        date: getDateText(timestamp),
+        time: getTimeText(timestamp),
 
         status: status,
         shortStatus: status,
 
         round: competition.round || "",
         season: competition.season || 0,
+        stadium: game.stadium || "",
 
         streamUrl: game.streamUrl || ""
     };
@@ -217,19 +330,43 @@ async function fetchMatches(options) {
                 );
             }
 
-            const games = data.games;
-
-            games.forEach(function (game) {
+            data.games.forEach(function (game) {
                 const match = normalize(game, sportId);
 
-                if (match) {
-                    unique[String(match.gameId)] = match;
+                if (!match) {
+                    return;
+                }
+
+                const id = String(match.gameId);
+                const previous = unique[id];
+
+                if (!previous) {
+                    unique[id] = match;
+                } else {
+                    /*
+                     * Keep existing non-empty fields if a duplicate
+                     * response contains missing or empty values.
+                     */
+                    const merged = Object.assign({}, previous, match);
+
+                    if (
+                        Array.isArray(previous.goalEvents) &&
+                        previous.goalEvents.length > 0 &&
+                        (
+                            !Array.isArray(match.goalEvents) ||
+                            match.goalEvents.length === 0
+                        )
+                    ) {
+                        merged.goalEvents = previous.goalEvents;
+                    }
+
+                    unique[id] = merged;
                 }
             });
 
             console.log(
                 "365Scores sport " + sportId +
-                ": " + games.length + " games"
+                ": " + data.games.length + " games"
             );
 
         } catch (error) {
