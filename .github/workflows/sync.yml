@@ -1,3 +1,4 @@
+
 name: SportsHub API Sync
 
 on:
@@ -60,11 +61,6 @@ jobs:
           const fs = require("fs");
 
           async function main() {
-            let shouldSync = false;
-            let reason = "";
-            let interval = 15;
-            let enabled = false;
-
             try {
               if (
                 !process.env.FIREBASE_SERVICE_ACCOUNT ||
@@ -73,26 +69,23 @@ jobs:
                 throw new Error("Firebase secrets are missing.");
               }
 
-              const serviceAccount = JSON.parse(
-                process.env.FIREBASE_SERVICE_ACCOUNT
-              );
-
               admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount),
+                credential: admin.credential.cert(
+                  JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+                ),
                 databaseURL: process.env.FIREBASE_DATABASE_URL
               });
 
-              const db = admin.database();
-
-              const snapshot = await db
+              const snapshot = await admin.database()
                 .ref("syncSettings")
                 .once("value");
 
               const settings = snapshot.val() || {};
 
-              enabled = settings.autoSyncEnabled === true;
+              const enabled =
+                settings.autoSyncEnabled === true;
 
-              interval = Number(
+              let interval = Number(
                 settings.syncIntervalMinutes || 15
               );
 
@@ -103,12 +96,15 @@ jobs:
                 interval = 15;
               }
 
-              const eventName = process.env.EVENT_NAME;
+              let shouldSync = false;
+              let reason = "";
 
-              if (eventName === "workflow_dispatch") {
+              if (process.env.EVENT_NAME === "workflow_dispatch") {
                 shouldSync = true;
                 reason = "Manual sync requested.";
-              } else if (eventName === "schedule") {
+              } else if (
+                process.env.EVENT_NAME === "schedule"
+              ) {
                 if (!enabled) {
                   reason = "Automatic Sync is OFF.";
                 } else {
@@ -116,30 +112,22 @@ jobs:
                     settings.lastSuccessfulSync || 0
                   );
 
-                  const now = Date.now();
+                  const elapsed = Date.now() - lastSync;
                   const intervalMs = interval * 60 * 1000;
-                  const elapsed = now - lastSync;
 
                   if (lastSync <= 0 || elapsed >= intervalMs) {
                     shouldSync = true;
                     reason = "Selected interval has elapsed.";
                   } else {
-                    const remainingMs = intervalMs - elapsed;
                     const remainingSeconds = Math.ceil(
-                      remainingMs / 1000
+                      (intervalMs - elapsed) / 1000
                     );
-
-                    const minutes = Math.floor(
-                      remainingSeconds / 60
-                    );
-
-                    const seconds = remainingSeconds % 60;
 
                     reason =
                       "Waiting approximately " +
-                      minutes +
+                      Math.floor(remainingSeconds / 60) +
                       " minute(s) and " +
-                      seconds +
+                      (remainingSeconds % 60) +
                       " second(s).";
                   }
                 }
@@ -153,25 +141,27 @@ jobs:
               console.log("Should sync:", shouldSync);
               console.log("Reason:", reason);
 
-              const output = [
-                "should_sync=" + shouldSync,
-                "interval=" + interval,
-                "auto_sync_enabled=" + enabled,
-                "reason=" + reason.replace(/[\r\n]/g, " ")
-              ].join("\n") + "\n";
-
               fs.appendFileSync(
                 process.env.GITHUB_OUTPUT,
-                output
+                [
+                  "should_sync=" + shouldSync,
+                  "interval=" + interval,
+                  "auto_sync_enabled=" + enabled,
+                  "reason=" + reason.replace(/[\r\n]/g, " ")
+                ].join("\n") + "\n"
               );
             } finally {
               if (admin.apps.length) {
-                await admin.app().delete();
+                await Promise.all(
+                  admin.apps.map(function (app) {
+                    return app.delete();
+                  })
+                );
               }
             }
           }
 
-          main().catch(error => {
+          main().catch(function (error) {
             console.error(
               "Automatic sync check failed:",
               error.message
@@ -203,12 +193,10 @@ jobs:
                 throw new Error("Firebase secrets are missing.");
               }
 
-              const serviceAccount = JSON.parse(
-                process.env.FIREBASE_SERVICE_ACCOUNT
-              );
-
               admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount),
+                credential: admin.credential.cert(
+                  JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+                ),
                 databaseURL: process.env.FIREBASE_DATABASE_URL
               });
 
@@ -217,9 +205,7 @@ jobs:
                 .once("value");
 
               const settings = snapshot.val() || {};
-
-              const parserKey =
-                settings.selected_parser || "parse1";
+              const parserKey = settings.selected_parser || "parse1";
 
               const parser =
                 settings.parse &&
@@ -243,10 +229,12 @@ jobs:
               ) {
                 provider = "365scores";
               } else if (
+                apiParser === "api_parser" ||
                 apiParser === "apifootball" ||
+                apiParser === "api-football" ||
                 apiParser === "football"
               ) {
-                provider = "apifootball";
+                provider = "api-football";
               } else {
                 throw new Error(
                   "Unsupported API parser: " + apiParser
@@ -254,6 +242,7 @@ jobs:
               }
 
               console.log("Selected parser:", parserKey);
+              console.log("API parser value:", apiParser);
               console.log("Selected provider:", provider);
 
               fs.appendFileSync(
@@ -262,12 +251,16 @@ jobs:
               );
             } finally {
               if (admin.apps.length) {
-                await admin.app().delete();
+                await Promise.all(
+                  admin.apps.map(function (app) {
+                    return app.delete();
+                  })
+                );
               }
             }
           }
 
-          main().catch(error => {
+          main().catch(function (error) {
             console.error(
               "API selection failed:",
               error.message
@@ -277,41 +270,26 @@ jobs:
           NODE
 
       # --------------------------------------------------
-      # 6. Run API-Football
+      # 6. Run complete Firebase sync through index.js
       # --------------------------------------------------
-      - name: Run API-Football
-        if: >-
-          steps.autosync.outputs.should_sync == 'true' &&
-          steps.parser.outputs.provider == 'apifootball'
+      - name: Run SportsHub Sync
+        id: run_sync
+        if: steps.autosync.outputs.should_sync == 'true'
         env:
+          API_PROVIDER: ${{ steps.parser.outputs.provider }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
-        run: node apis/api-football.js
+        run: node index.js
 
       # --------------------------------------------------
-      # 7. Run 365Scores
-      # --------------------------------------------------
-      - name: Run 365Scores
-        if: >-
-          steps.autosync.outputs.should_sync == 'true' &&
-          steps.parser.outputs.provider == '365scores'
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
-        run: node apis/365scores.js
-
-      # --------------------------------------------------
-      # 8. Save successful sync timestamp
+      # 7. Save successful sync timestamp
       # --------------------------------------------------
       - name: Save Successful Sync Time
         if: >-
           success() &&
           steps.autosync.outputs.should_sync == 'true' &&
-          (
-            steps.parser.outputs.provider == '365scores' ||
-            steps.parser.outputs.provider == 'apifootball'
-          )
+          steps.run_sync.outcome == 'success'
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
@@ -328,12 +306,10 @@ jobs:
                 throw new Error("Firebase secrets are missing.");
               }
 
-              const serviceAccount = JSON.parse(
-                process.env.FIREBASE_SERVICE_ACCOUNT
-              );
-
               admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount),
+                credential: admin.credential.cert(
+                  JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+                ),
                 databaseURL: process.env.FIREBASE_DATABASE_URL
               });
 
@@ -351,12 +327,16 @@ jobs:
               );
             } finally {
               if (admin.apps.length) {
-                await admin.app().delete();
+                await Promise.all(
+                  admin.apps.map(function (app) {
+                    return app.delete();
+                  })
+                );
               }
             }
           }
 
-          main().catch(error => {
+          main().catch(function (error) {
             console.error(
               "Failed to save sync timestamp:",
               error.message
@@ -366,7 +346,7 @@ jobs:
           NODE
 
       # --------------------------------------------------
-      # 9. Workflow summary
+      # 8. Workflow summary
       # --------------------------------------------------
       - name: Workflow Summary
         if: always()
