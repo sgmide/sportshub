@@ -1,655 +1,721 @@
-
-"use strict";
-
-const admin = require("firebase-admin");
 const axios = require("axios");
+const admin = require("firebase-admin");
+
+/*
+ * SPORTS HUB CONFIGURATION
+ */
+
+const API_PROVIDER = (
+    process.env.API_PROVIDER || "apifootball"
+).toLowerCase();
+
+const API_KEY = process.env.API_FOOTBALL_KEY;
+const DATABASE_URL = process.env.FIREBASE_DATABASE_URL;
+const SERVICE_ACCOUNT_JSON =
+    process.env.FIREBASE_SERVICE_ACCOUNT;
 
 const TIMEZONE = "Asia/Kolkata";
-const DEFAULT_PROVIDER = "apifootball";
 
-function getPath(obj, path) {
-    if (!path) return undefined;
+/*
+ * Validate GitHub Secrets
+ */
 
-    return path.split(".").reduce(function (value, key) {
-        if (value == null) return undefined;
-
-        if (/^\d+$/.test(key)) {
-            return value[Number(key)];
-        }
-
-        return value[key];
-    }, obj);
+if (!API_KEY || !DATABASE_URL || !SERVICE_ACCOUNT_JSON) {
+    console.error("Missing required GitHub Secrets.");
+    process.exit(1);
 }
 
-function firstValue(obj, paths, fallback) {
-    for (const path of paths) {
-        const value = getPath(obj, path);
+let serviceAccount;
 
-        if (value !== undefined && value !== null && value !== "") {
-            return value;
-        }
+try {
+    serviceAccount = JSON.parse(SERVICE_ACCOUNT_JSON);
+} catch (error) {
+    console.error(
+        "FIREBASE_SERVICE_ACCOUNT is not valid JSON."
+    );
+
+    process.exit(1);
+}
+
+/*
+ * Firebase initialization
+ */
+
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    databaseURL: DATABASE_URL
+});
+
+const db = admin.database();
+
+/*
+ * API PROVIDER
+ *
+ * നിലവിൽ API-Football ആണ് പ്രവർത്തിക്കുന്നത്.
+ * മറ്റൊരു provider ചേർക്കുമ്പോൾ അതിന്റെ adapter ഇവിടെ ചേർക്കാം.
+ */
+
+function createProvider() {
+
+    if (API_PROVIDER === "apifootball") {
+
+        return {
+            name: "apifootball",
+
+            async fetchFixtures(date) {
+
+                const response = await axios.get(
+                    "https://v3.football.api-sports.io/fixtures",
+                    {
+                        timeout: 30000,
+
+                        headers: {
+                            "x-apisports-key": API_KEY
+                        },
+
+                        params: {
+                            date: date,
+                            timezone: TIMEZONE
+                        }
+                    }
+                );
+
+                const data = response.data || {};
+
+                if (
+                    data.errors &&
+                    Object.keys(data.errors).length > 0
+                ) {
+                    throw new Error(
+                        JSON.stringify(data.errors)
+                    );
+                }
+
+                return data.response || [];
+            }
+        };
     }
 
-    return fallback;
+    throw new Error(
+        "Unsupported API_PROVIDER: " + API_PROVIDER
+    );
 }
 
-function toNumber(value, fallback) {
-    const number = Number(value);
+const provider = createProvider();
 
-    return Number.isFinite(number) ? number : fallback;
-}
+/*
+ * DATE HELPERS
+ */
 
-function formatDate(date) {
-    const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: TIMEZONE,
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric"
-    }).formatToParts(date);
+function getLocalDate(offset) {
 
-    const values = {};
-
-    parts.forEach(function (part) {
-        values[part.type] = part.value;
-    });
-
-    return values.day + "-" + values.month + "-" + values.year;
-}
-
-function formatTime(date) {
-    return new Intl.DateTimeFormat("en-GB", {
-        timeZone: TIMEZONE,
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false
-    }).format(date);
-}
-
-function dateString(date) {
-    return new Intl.DateTimeFormat("en-CA", {
+    const parts = new Intl.DateTimeFormat("en-CA", {
         timeZone: TIMEZONE,
         year: "numeric",
         month: "2-digit",
         day: "2-digit"
+    }).formatToParts(new Date());
+
+    const values = {};
+
+    for (const part of parts) {
+        values[part.type] = part.value;
+    }
+
+    const date = new Date(Date.UTC(
+        Number(values.year),
+        Number(values.month) - 1,
+        Number(values.day) + offset
+    ));
+
+    return date.toISOString().substring(0, 10);
+}
+
+function formatDate(dateString) {
+
+    if (!dateString) {
+        return "";
+    }
+
+    const date = new Date(dateString);
+
+    if (isNaN(date.getTime())) {
+        return "";
+    }
+
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        timeZone: TIMEZONE
+    }).formatToParts(date);
+
+    let day = "";
+    let month = "";
+    let year = "";
+
+    for (const part of parts) {
+
+        if (part.type === "day") {
+            day = part.value;
+        }
+
+        if (part.type === "month") {
+            month = part.value;
+        }
+
+        if (part.type === "year") {
+            year = part.value;
+        }
+    }
+
+    return day + "-" + month + "-" + year;
+}
+
+function formatTime(dateString) {
+
+    if (!dateString) {
+        return "";
+    }
+
+    const date = new Date(dateString);
+
+    if (isNaN(date.getTime())) {
+        return "";
+    }
+
+    return new Intl.DateTimeFormat("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: TIMEZONE
     }).format(date);
 }
 
-function initFirebase() {
-    if (admin.apps.length) return;
+/*
+ * STATUS CONVERSION
+ */
 
-    const serviceAccountText =
-        process.env.FIREBASE_SERVICE_ACCOUNT;
+function getStatus(shortStatus, longStatus) {
 
-    const databaseURL =
-        process.env.FIREBASE_DATABASE_URL;
-
-    if (!serviceAccountText || !databaseURL) {
-        throw new Error(
-            "Missing FIREBASE_SERVICE_ACCOUNT or FIREBASE_DATABASE_URL"
-        );
-    }
-
-    admin.initializeApp({
-        credential: admin.credential.cert(
-            JSON.parse(serviceAccountText)
-        ),
-        databaseURL: databaseURL
-    });
-}
-
-function normalizeProvider(value) {
-    const provider = String(value || DEFAULT_PROVIDER)
-        .trim()
-        .toLowerCase();
-
-    if (provider === "365" || provider === "365scores") {
-        return "365scores";
-    }
+    const status = String(
+        shortStatus || ""
+    ).toUpperCase();
 
     if (
-        provider === "api-football" ||
-        provider === "api_football" ||
-        provider === "apifootball"
+        ["1H", "2H", "ET", "BT", "P", "LIVE"].includes(status)
     ) {
-        return "apifootball";
+        return "Live";
     }
 
-    return provider;
+    if (status === "HT") return "HT";
+    if (status === "FT") return "FT";
+    if (status === "AET") return "After Extra Time";
+    if (status === "PEN") return "After Penalties";
+    if (status === "PST") return "Postponed";
+    if (status === "CANC") return "Cancelled";
+    if (status === "ABD") return "Abandoned";
+    if (status === "SUSP") return "Suspended";
+    if (status === "INT") return "Interrupted";
+    if (status === "NS") return "Upcoming";
+
+    return longStatus || status || "Upcoming";
 }
 
 /*
- * Read provider configuration from:
+ * PROVIDER RESPONSE -> COMMON MATCH MODEL
  *
- * settings/apiProviders/{provider}
+ * MatchModel.java fields:
  *
- * Example:
- * {
- *   "url": "https://example.com/api/matches",
- *   "method": "get",
- *   "headers": {},
- *   "queryParams": {},
- *   "responsePath": "response",
- *   "fields": {
- *     "id": "fixture.id",
- *     "leagueId": "league.id",
- *     "league": "league.name",
- *     "home": "teams.home.name",
- *     "away": "teams.away.name"
- *   }
- * }
+ * gameId              int
+ * competitionId       int
+ * league              String
+ * home                String
+ * away                String
+ * score               String
+ * status              String
+ * shortStatus         String
+ * streamUrl           String
+ * date                String
+ * time                String
+ * stadium             String
+ * matchTimeMillis     long
+ * homeLogo            String
+ * awayLogo            String
+ *
+ * Additional API metadata is also retained.
  */
 
-async function fetchConfiguredProvider(
-    provider,
-    config,
-    date
-) {
-    if (!config || !config.url) {
-        throw new Error(
-            "Missing API configuration for provider: " + provider
-        );
-    }
+function convertFixture(item) {
 
-    const params = Object.assign({}, config.queryParams || {});
-
-    if (config.dateParam) {
-        params[config.dateParam] = date;
-    }
-
-    const headers = Object.assign({}, config.headers || {});
-
-    if (config.apiKeyEnv) {
-        const apiKey = process.env[config.apiKeyEnv];
-
-        if (!apiKey) {
-            throw new Error(
-                "Missing API key environment variable: " +
-                config.apiKeyEnv
-            );
-        }
-
-        if (config.apiKeyHeader) {
-            headers[config.apiKeyHeader] = apiKey;
-        }
-    }
-
-    const response = await axios({
-        method: config.method || "get",
-        url: config.url,
-        params: params,
-        headers: headers,
-        timeout: 30000
-    });
-
-    const payload = config.responsePath
-        ? getPath(response.data, config.responsePath)
-        : response.data;
-
-    if (Array.isArray(payload)) {
-        return payload;
-    }
-
-    if (payload && typeof payload === "object") {
-        if (Array.isArray(payload.games)) return payload.games;
-        if (Array.isArray(payload.fixtures)) return payload.fixtures;
-        if (Array.isArray(payload.response)) return payload.response;
-        if (Array.isArray(payload.events)) return payload.events;
-        if (Array.isArray(payload.results)) return payload.results;
-    }
-
-    throw new Error(
-        "API response does not contain a recognised matches array. " +
-        "Configure responsePath for " + provider
-    );
-}
-
-async function fetchApiFootball(date) {
-    const apiKey = process.env.API_FOOTBALL_KEY;
-
-    if (!apiKey) {
-        throw new Error("Missing API_FOOTBALL_KEY");
-    }
-
-    const response = await axios.get(
-        "https://v3.football.api-sports.io/fixtures",
-        {
-            params: {
-                date: date,
-                timezone: TIMEZONE
-            },
-            headers: {
-                "x-apisports-key": apiKey
-            },
-            timeout: 30000
-        }
-    );
-
-    if (response.data && response.data.errors &&
-        Object.keys(response.data.errors).length) {
-        throw new Error(
-            "API-Football error: " +
-            JSON.stringify(response.data.errors)
-        );
-    }
-
-    if (!Array.isArray(response.data.response)) {
-        throw new Error(
-            "Invalid API-Football response"
-        );
-    }
-
-    return response.data.response;
-}
-
-function normalizeApiFootball(item) {
     const fixture = item.fixture || {};
     const league = item.league || {};
     const teams = item.teams || {};
     const goals = item.goals || {};
-    const home = teams.home || {};
-    const away = teams.away || {};
-    const statusInfo = fixture.status || {};
+    const status = fixture.status || {};
+    const venue = fixture.venue || {};
 
-    const timestamp = toNumber(fixture.timestamp, 0);
-    const date = timestamp
-        ? new Date(timestamp * 1000)
-        : new Date();
+    const fixtureId = Number(fixture.id || 0);
 
-    const homeScore = goals.home;
-    const awayScore = goals.away;
+    if (!fixtureId) {
+        return null;
+    }
+
+    const homeScore =
+        goals.home == null ? 0 : goals.home;
+
+    const awayScore =
+        goals.away == null ? 0 : goals.away;
+
+    const fixtureDate = fixture.date || "";
+
+    const timestamp = Number(
+        fixture.timestamp || 0
+    );
 
     return {
-        gameId: toNumber(fixture.id, 0),
-        apiFixtureId: String(fixture.id || ""),
-        apiProvider: "apifootball",
 
-        competitionId: toNumber(league.id, 0),
-        league: league.name || "Unknown Competition",
-        country: league.country || "",
-        season: league.season || "",
+        gameId: fixtureId,
 
-        home: home.name || "Home",
-        away: away.name || "Away",
-        homeLogo: home.logo || "",
-        awayLogo: away.logo || "",
+        competitionId: Number(league.id || 0),
 
-        homeScore: homeScore,
-        awayScore: awayScore,
+        league: String(league.name || ""),
 
-        score:
-            homeScore != null && awayScore != null
-                ? homeScore + " - " + awayScore
-                : "VS",
+        home: String(
+            (teams.home || {}).name || ""
+        ),
 
-        status: statusInfo.long || "Not Started",
-        shortStatus: statusInfo.short || "NS",
-        elapsed: statusInfo.elapsed,
+        away: String(
+            (teams.away || {}).name || ""
+        ),
 
-        date: formatDate(date),
-        time: formatTime(date),
-        timestamp: timestamp,
+        score: homeScore + " - " + awayScore,
+
+        status: getStatus(
+            status.short,
+            status.long
+        ),
+
+        shortStatus: String(
+            status.short || "NS"
+        ),
+
+        streamUrl: "",
+
+        date: formatDate(fixtureDate),
+
+        time: formatTime(fixtureDate),
+
+        stadium: String(venue.name || ""),
+
         matchTimeMillis: timestamp * 1000,
 
-        stadium: fixture.venue
-            ? fixture.venue.name || ""
-            : "",
+        homeLogo: String(
+            (teams.home || {}).logo || ""
+        ),
 
-        updatedAt: Date.now()
-    };
-}
+        awayLogo: String(
+            (teams.away || {}).logo || ""
+        ),
 
-function normalizeConfigured(item, provider, config) {
-    const fields = config.fields || {};
+        /*
+         * Extra metadata
+         */
 
-    function read(name, fallbacks, fallback) {
-        if (fields[name]) {
-            const value = getPath(item, fields[name]);
+        fixtureId: String(fixtureId),
 
-            if (value !== undefined && value !== null) {
-                return value;
-            }
-        }
+        apiProvider: API_PROVIDER,
 
-        return firstValue(item, fallbacks || [], fallback);
-    }
+        apiFixtureId: String(fixtureId),
 
-    const id = read("id", [
-        "id",
-        "gameId",
-        "fixture.id",
-        "game.id"
-    ], null);
+        competition: String(league.name || ""),
 
-    if (id == null) return null;
+        country: String(league.country || ""),
 
-    const timestampValue = read("timestamp", [
-        "timestamp",
-        "fixture.timestamp",
-        "startTime",
-        "startTimestamp"
-    ], 0);
+        season: Number(league.season || 0),
 
-    let timestamp = toNumber(timestampValue, 0);
-
-    if (timestamp > 0 && timestamp < 100000000000) {
-        timestamp *= 1000;
-    }
-
-    let date = timestamp
-        ? new Date(timestamp)
-        : new Date();
-
-    const home = read("home", [
-        "home.name",
-        "homeTeam.name",
-        "homeCompetitor.name",
-        "competitors.0.name",
-        "teams.home.name"
-    ], "Home");
-
-    const away = read("away", [
-        "away.name",
-        "awayTeam.name",
-        "awayCompetitor.name",
-        "competitors.1.name",
-        "teams.away.name"
-    ], "Away");
-
-    const homeScore = read("homeScore", [
-        "homeScore",
-        "scores.home",
-        "score.home",
-        "homeCompetitor.score",
-        "scores.0"
-    ], null);
-
-    const awayScore = read("awayScore", [
-        "awayScore",
-        "scores.away",
-        "score.away",
-        "awayCompetitor.score",
-        "scores.1"
-    ], null);
-
-    const competitionId = read("leagueId", [
-        "competitionId",
-        "competition.id",
-        "league.id",
-        "tournament.id"
-    ], 0);
-
-    const league = read("league", [
-        "competition.name",
-        "league.name",
-        "tournament.name",
-        "competitionName"
-    ], "Unknown Competition");
-
-    const shortStatus = read("shortStatus", [
-        "shortStatus",
-        "status.short",
-        "status.code",
-        "status"
-    ], "NS");
-
-    const status = read("status", [
-        "status.long",
-        "status.name",
-        "status"
-    ], "Not Started");
-
-    const homeLogo = read("homeLogo", [
-        "home.logo",
-        "homeTeam.logo",
-        "homeCompetitor.image",
-        "teams.home.logo"
-    ], "");
-
-    const awayLogo = read("awayLogo", [
-        "away.logo",
-        "awayTeam.logo",
-        "awayCompetitor.image",
-        "teams.away.logo"
-    ], "");
-
-    return {
-        gameId: String(id),
-        apiFixtureId: String(id),
-        apiProvider: provider,
-
-        competitionId: String(competitionId || ""),
-        league: String(league),
-        country: String(read("country", [
-            "country.name",
-            "country",
-            "league.country"
-        ], "")),
-
-        home: String(home),
-        away: String(away),
-        homeLogo: homeLogo || "",
-        awayLogo: awayLogo || "",
+        timestamp: timestamp,
 
         homeScore: homeScore,
+
         awayScore: awayScore,
-        score:
-            homeScore != null && awayScore != null
-                ? homeScore + " - " + awayScore
-                : "VS",
 
-        status: String(status),
-        shortStatus: String(shortStatus),
+        elapsed: status.elapsed == null
+            ? 0
+            : status.elapsed,
 
-        date: formatDate(date),
-        time: formatTime(date),
-        timestamp: Math.floor(date.getTime() / 1000),
-        matchTimeMillis: date.getTime(),
-
-        stadium: String(read("stadium", [
-            "venue.name",
-            "stadium",
-            "venue"
-        ], "")),
-
-        updatedAt: Date.now()
+        lastUpdated: Date.now()
     };
 }
 
-async function main() {
-    initFirebase();
+/*
+ * FETCH FIXTURES
+ */
 
-    const db = admin.database();
-    const settingsRef = db.ref("settings");
+async function fetchFixturesForDate(date) {
 
-    const settingsSnapshot = await settingsRef.once("value");
-    const settings = settingsSnapshot.val() || {};
-
-    const provider = normalizeProvider(
-        process.env.API_PROVIDER ||
-        settings.apiProvider ||
-        DEFAULT_PROVIDER
+    console.log(
+        "Fetching fixtures for:",
+        date
     );
 
-    const previousProvider = normalizeProvider(
-        settings.last_synced_api_provider || ""
-    );
+    return await provider.fetchFixtures(date);
+}
 
-    const dates = [];
-    const today = new Date();
+/*
+ * FETCH YESTERDAY, TODAY AND TOMORROW
+ *
+ * Each date is requested only once during this run.
+ */
 
-    for (let offset = -1; offset <= 1; offset++) {
-        const date = new Date(today);
-        date.setDate(date.getDate() + offset);
-        dates.push(dateString(date));
-    }
+async function fetchAvailableFixtureMap() {
 
-    const allMatches = {};
-    let successfulRequests = 0;
-    let errors = [];
+    const dates = [
+        getLocalDate(-1),
+        getLocalDate(0),
+        getLocalDate(1)
+    ];
 
-    let providerConfig = null;
+    const fixtureMap = {};
 
-    if (provider !== "apifootball") {
-        const configSnapshot = await db
-            .ref("settings/apiProviders/" + provider)
-            .once("value");
-
-        providerConfig = configSnapshot.val();
-
-        if (!providerConfig) {
-            throw new Error(
-                "No settings/apiProviders/" + provider +
-                " configuration found in Firebase"
-            );
-        }
-    }
+    let successfulDates = 0;
 
     for (const date of dates) {
+
         try {
-            let items;
 
-            if (provider === "apifootball") {
-                items = await fetchApiFootball(date);
-            } else {
-                items = await fetchConfiguredProvider(
-                    provider,
-                    providerConfig,
-                    date
-                );
-            }
+            const fixtures =
+                await fetchFixturesForDate(date);
 
-            successfulRequests++;
-
-            for (const item of items) {
-                let match;
-
-                if (provider === "apifootball") {
-                    match = normalizeApiFootball(item);
-                } else {
-                    match = normalizeConfigured(
-                        item,
-                        provider,
-                        providerConfig
-                    );
-                }
-
-                if (!match || !match.gameId) continue;
-
-                const key = String(match.gameId)
-                    .replace(/[.#$[\]/]/g, "_");
-
-                allMatches[key] = match;
-            }
+            successfulDates++;
 
             console.log(
-                "Fetched " + items.length +
-                " records for " + date
+                "Fixtures received for " +
+                date + ": " +
+                fixtures.length
             );
+
+            for (const item of fixtures) {
+
+                const match = convertFixture(item);
+
+                if (match && match.gameId) {
+
+                    fixtureMap[String(match.gameId)] = {
+                        source: item,
+                        match: match
+                    };
+                }
+            }
+
         } catch (error) {
-            errors.push(date + ": " + error.message);
-            console.error("Fetch failed:", date, error.message);
+
+            console.error(
+                "Could not fetch " +
+                date + ": " +
+                error.message
+            );
         }
     }
 
-    if (successfulRequests === 0) {
+    if (successfulDates === 0) {
+
         throw new Error(
-            "All API requests failed. Firebase data was not changed. " +
-            errors.join(" | ")
+            "All date requests failed. " +
+            "Existing Firebase data was preserved."
         );
     }
 
-    if (Object.keys(allMatches).length === 0) {
+    return {
+        fixtureMap: fixtureMap,
+        successfulDates: successfulDates,
+        requestedDates: dates
+    };
+}
+
+/*
+ * SYNC AVAILABLE MATCHES
+ *
+ * Existing records are not deleted.
+ */
+
+async function syncAvailableMatches(fixtureMap) {
+
+    const ids = Object.keys(fixtureMap);
+
+    if (ids.length === 0) {
+
         console.log(
-            "No matches returned. Existing match data will be preserved."
+            "No fixtures returned. " +
+            "Existing availableMatches data preserved."
         );
+
         return;
     }
 
-    const providerChanged =
-        previousProvider &&
-        previousProvider !== provider;
+    let updated = 0;
 
-    const updates = {};
+    for (const fixtureId of ids) {
 
-    if (providerChanged) {
-        console.log(
-            "Provider changed from " +
-            previousProvider + " to " + provider +
-            ". Resetting old provider data."
-        );
+        try {
 
-        updates.matches = null;
-        updates.availableMatches = null;
-        updates.competitions = null;
-        updates.competition_selection = null;
-        updates.selectedFixtures = null;
-    }
+            const incoming =
+                fixtureMap[fixtureId].match;
 
-    const oldCompetitionsSnapshot = providerChanged
-        ? null
-        : await db.ref("competitions").once("value");
+            const ref = db
+                .ref("availableMatches")
+                .child(fixtureId);
 
-    const oldSelectionsSnapshot = providerChanged
-        ? null
-        : await db.ref("competition_selection").once("value");
+            const snapshot = await ref.once("value");
 
-    const oldCompetitions =
-        oldCompetitionsSnapshot
-            ? oldCompetitionsSnapshot.val() || {}
-            : {};
+            const existing = snapshot.val() || {};
 
-    const oldSelections =
-        oldSelectionsSnapshot
-            ? oldSelectionsSnapshot.val() || {}
-            : {};
+            /*
+             * Do not overwrite a stream URL manually saved
+             * for this fixture in availableMatches.
+             */
 
-    const competitions = {};
-    const selectedMatches = {};
+            incoming.streamUrl =
+                existing.streamUrl || "";
 
-    for (const key of Object.keys(allMatches)) {
-        const match = allMatches[key];
-        const competitionId = String(match.competitionId || "");
+            /*
+             * Update only the current fixture.
+             * No Firebase records are deleted.
+             */
 
-        if (competitionId) {
-            const oldCompetition = oldCompetitions[competitionId] || {};
+            await ref.update(incoming);
 
-            const selected = oldSelections[competitionId] === true ||
-                oldCompetition.selected === true;
+            updated++;
 
-            competitions[competitionId] = {
-                id: competitionId,
-                name: match.league,
-                sportId: 1,
-                selected: selected,
-                apiProvider: provider
-            };
+        } catch (error) {
 
-            if (selected) {
-                selectedMatches[key] = match;
-            }
+            console.error(
+                "Failed available match " +
+                fixtureId + ": " +
+                error.message
+            );
         }
     }
 
-    updates.availableMatches = allMatches;
-    updates.competitions = competitions;
-    updates.matches = selectedMatches;
-
-    updates.settings = Object.assign({}, settings, {
-        last_synced_api_provider: provider,
-        lastSuccessfulSync: Date.now(),
-        lastSyncMatchCount: Object.keys(allMatches).length,
-        lastSyncError: errors.length ? errors.join(" | ") : ""
-    });
-
-    await db.ref().update(updates);
-
-    console.log("Provider:", provider);
-    console.log("Fetched matches:", Object.keys(allMatches).length);
-    console.log("Selected matches:", Object.keys(selectedMatches).length);
-    console.log("Sync complete.");
+    console.log(
+        "Available matches updated:",
+        updated
+    );
 }
 
-main().catch(function (error) {
-    console.error("Sync failed:", error);
-    process.exitCode = 1;
-});
+/*
+ * READ SELECTED FIXTURES
+ *
+ * Supported selection values:
+ *
+ * selectedFixtures/{fixtureId} = true
+ *
+ * or
+ *
+ * selectedFixtures/{fixtureId}/selected = true
+ */
+
+function getSelectedFixtureIds(selections) {
+
+    return Object.keys(selections || {}).filter(
+        function(id) {
+
+            const value = selections[id];
+
+            if (value === true) {
+                return true;
+            }
+
+            if (
+                value &&
+                typeof value === "object" &&
+                value.selected === true
+            ) {
+                return true;
+            }
+
+            return false;
+        }
+    );
+}
+
+/*
+ * SYNC SELECTED MATCHES
+ *
+ * Uses the fixture data already fetched above.
+ * It does not make one extra API call per selected fixture.
+ */
+
+async function syncSelectedMatches(fixtureMap) {
+
+    const snapshot = await db
+        .ref("selectedFixtures")
+        .once("value");
+
+    const selections = snapshot.val() || {};
+
+    const selectedIds =
+        getSelectedFixtureIds(selections);
+
+    console.log(
+        "Selected fixture count:",
+        selectedIds.length
+    );
+
+    if (selectedIds.length === 0) {
+
+        console.log("No selected fixtures.");
+        return;
+    }
+
+    let updated = 0;
+    let notFound = 0;
+
+    for (const fixtureId of selectedIds) {
+
+        try {
+
+            const entry = fixtureMap[String(fixtureId)];
+
+            if (!entry) {
+
+                console.log(
+                    "Selected fixture not found in fetched dates:",
+                    fixtureId
+                );
+
+                notFound++;
+                continue;
+            }
+
+            const incoming = Object.assign(
+                {},
+                entry.match
+            );
+
+            const ref = db
+                .ref("matches")
+                .child(String(fixtureId));
+
+            const oldSnapshot = await ref.once("value");
+
+            const existing = oldSnapshot.val() || {};
+
+            /*
+             * Keep Admin-entered stream URL.
+             */
+
+            incoming.streamUrl =
+                existing.streamUrl || "";
+
+            /*
+             * Preserve existing IDs where available.
+             */
+
+            incoming.gameId = Number(
+                existing.gameId || incoming.gameId
+            );
+
+            incoming.competitionId = Number(
+                incoming.competitionId || 0
+            );
+
+            /*
+             * update() preserves fields not included in incoming.
+             * This avoids deleting additional existing fields.
+             */
+
+            await ref.update(incoming);
+
+            updated++;
+
+            console.log(
+                "Updated selected match:",
+                incoming.home,
+                "vs",
+                incoming.away,
+                "|",
+                incoming.score,
+                "|",
+                incoming.status
+            );
+
+        } catch (error) {
+
+            console.error(
+                "Failed selected fixture " +
+                fixtureId + ": " +
+                error.message
+            );
+        }
+    }
+
+    console.log(
+        "Selected matches updated:",
+        updated
+    );
+
+    console.log(
+        "Selected matches not found:",
+        notFound
+    );
+}
+
+/*
+ * MAIN
+ */
+
+async function main() {
+
+    console.log("================================");
+    console.log("SportsHub sync started.");
+    console.log("Provider:", API_PROVIDER);
+    console.log("Timezone:", TIMEZONE);
+    console.log("================================");
+
+    /*
+     * Fetch fixture lists once and share them between
+     * availableMatches and selected-match synchronization.
+     */
+
+    const result = await fetchAvailableFixtureMap();
+
+    const fixtureMap = result.fixtureMap;
+
+    console.log(
+        "Unique fixtures fetched:",
+        Object.keys(fixtureMap).length
+    );
+
+    console.log(
+        "Successful date requests:",
+        result.successfulDates,
+        "/",
+        result.requestedDates.length
+    );
+
+    await syncAvailableMatches(fixtureMap);
+
+    await syncSelectedMatches(fixtureMap);
+
+    console.log("SportsHub sync completed.");
+}
+
+/*
+ * START
+ */
+
+main()
+    .then(function() {
+
+        process.exit(0);
+    })
+    .catch(function(error) {
+
+        console.error(
+            "SportsHub sync failed:",
+            error.message
+        );
+
+        process.exit(1);
+    });
