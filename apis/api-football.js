@@ -1,26 +1,141 @@
-
 "use strict";
 
 const axios = require("axios");
 
-const API_URL = "https://v3.football.api-sports.io/fixtures";
-const TIME_ZONE = "Asia/Kolkata";
+function getApiKey(settings) {
+    return (
+        process.env.API_FOOTBALL_KEY ||
+        process.env.APISPORTS_KEY ||
+        settings.apiFootballKey ||
+        ""
+    );
+}
 
-async function fetch(date, options) {
-    const apiKey = process.env.API_FOOTBALL_KEY;
+function getFixturesUrl(parserSettings) {
+    const configured =
+        parserSettings.game_api_url ||
+        parserSettings.api_url ||
+        "https://v3.football.api-sports.io/fixtures";
 
-    if (!apiKey) {
-        throw new Error("Missing API_FOOTBALL_KEY secret");
+    const url = configured.replace(/\/+$/, "");
+
+    if (/\/fixtures$/i.test(url)) {
+        return url;
     }
 
-    const response = await axios.get(API_URL, {
+    return url + "/fixtures";
+}
+
+function toMillis(value) {
+    if (!value) return 0;
+
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalize(fixture) {
+    const id = fixture.fixture && fixture.fixture.id;
+
+    if (id == null) return null;
+
+    const fixtureInfo = fixture.fixture || {};
+    const league = fixture.league || {};
+    const teams = fixture.teams || {};
+    const goals = fixture.goals || {};
+    const score = fixture.score || {};
+    const home = teams.home || {};
+    const away = teams.away || {};
+    const statusInfo = fixtureInfo.status || {};
+
+    const status = statusInfo.short || "NS";
+    const elapsed = statusInfo.elapsed;
+
+    const displayStatus =
+        elapsed != null &&
+        (
+            status === "1H" ||
+            status === "2H" ||
+            status === "ET" ||
+            status === "LIVE"
+        )
+            ? String(elapsed) + "'"
+            : status;
+
+    const timestamp = toMillis(fixtureInfo.date);
+
+    return {
+        gameId: Number(id),
+        apiFixtureId: Number(id),
+        apiProvider: "api-football",
+
+        competitionId: Number(league.id || 0),
+        competitionName: league.name || "",
+        sportId: 1,
+
+        homeCompetitorId: Number(home.id || 0),
+        awayCompetitorId: Number(away.id || 0),
+
+        homeTeam: home.name || "Home",
+        awayTeam: away.name || "Away",
+
+        homeLogo: home.logo || "",
+        awayLogo: away.logo || "",
+
+        homeScore: goals.home == null ? 0 : Number(goals.home),
+        awayScore: goals.away == null ? 0 : Number(goals.away),
+
+        halftimeHomeScore:
+            score.halftime && score.halftime.home != null
+                ? Number(score.halftime.home)
+                : 0,
+
+        halftimeAwayScore:
+            score.halftime && score.halftime.away != null
+                ? Number(score.halftime.away)
+                : 0,
+
+        goalEvents: [],
+
+        timestamp: timestamp,
+        matchTimeMillis: timestamp,
+
+        status: displayStatus,
+        shortStatus: status,
+
+        round: league.round || "",
+        season: league.season || 0,
+        venue: fixtureInfo.venue
+            ? fixtureInfo.venue.name || ""
+            : "",
+
+        streamUrl: ""
+    };
+}
+
+async function fetchMatches(options) {
+    const date = options.date;
+    const settings = options.settings || {};
+    const parserSettings = options.parserSettings || {};
+
+    const apiKey = getApiKey(settings);
+
+    if (!apiKey) {
+        throw new Error(
+            "API_FOOTBALL_KEY secret is missing"
+        );
+    }
+
+    const url = getFixturesUrl(parserSettings);
+
+    const response = await axios.get(url, {
         timeout: 30000,
         params: {
             date: date,
-            timezone: options.timezone || TIME_ZONE
+            timezone: "Asia/Kolkata"
         },
         headers: {
-            "x-apisports-key": apiKey
+            "x-apisports-key": apiKey,
+            "Accept": "application/json"
         }
     });
 
@@ -35,98 +150,15 @@ async function fetch(date, options) {
 
     if (!Array.isArray(data.response)) {
         throw new Error(
-            "API-Football response array is missing"
+            "Unexpected API-Football response"
         );
     }
 
-    return data.response;
-}
-
-function normalize(item) {
-    const fixture = item.fixture || {};
-    const league = item.league || {};
-    const teams = item.teams || {};
-    const goals = item.goals || {};
-    const home = teams.home || {};
-    const away = teams.away || {};
-    const statusData = fixture.status || {};
-
-    const short = String(statusData.short || "NS");
-    const elapsed = statusData.elapsed;
-
-    let status = "UPCOMING";
-
-    if (["1H", "2H", "ET", "P", "LIVE"].indexOf(short) >= 0) {
-        status = "LIVE";
-    } else if (short === "HT") {
-        status = "HT";
-    } else if (short === "FT" || short === "AET" || short === "PEN") {
-        status = "FT";
-    } else if (short === "PST" || short === "SUSP") {
-        status = "PPD";
-    } else if (short === "CANC") {
-        status = "CANC";
-    } else if (short === "ABD") {
-        status = "ABD";
-    } else if (short === "AWD" || short === "WO") {
-        status = "FT";
-    }
-
-    const timestamp = fixture.timestamp
-        ? Number(fixture.timestamp) * 1000
-        : (Date.parse(fixture.date || "") || 0);
-
-    const hasScore =
-        goals.home != null && goals.away != null;
-
-    return {
-        gameId: String(fixture.id || ""),
-        fixtureId: String(fixture.id || ""),
-        apiFixtureId: String(fixture.id || ""),
-        apiProvider: "api-football",
-        sportId: 1,
-        competitionId: String(league.id || ""),
-        league: league.name || "Unknown competition",
-        country: league.country || "",
-        season: league.season || "",
-        home: home.name || "",
-        away: away.name || "",
-        homeLogo: home.logo || "",
-        awayLogo: away.logo || "",
-        homeScore: goals.home == null ? null : Number(goals.home),
-        awayScore: goals.away == null ? null : Number(goals.away),
-        score: hasScore
-            ? String(goals.home) + " - " + String(goals.away)
-            : "VS",
-        status: status,
-        shortStatus: short,
-        elapsed: elapsed == null ? "" : elapsed,
-        date: timestamp
-            ? new Intl.DateTimeFormat("en-GB", {
-                  timeZone: TIME_ZONE,
-                  day: "2-digit",
-                  month: "2-digit",
-                  year: "numeric"
-              }).format(new Date(timestamp))
-            : "",
-        time: timestamp
-            ? new Intl.DateTimeFormat("en-GB", {
-                  timeZone: TIME_ZONE,
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  hour12: false
-              }).format(new Date(timestamp))
-            : "",
-        timestamp: timestamp,
-        matchTimeMillis: timestamp,
-        stadium: fixture.venue && fixture.venue.name
-            ? fixture.venue.name
-            : "",
-        streamUrl: ""
-    };
+    return data.response.map(normalize).filter(function (match) {
+        return match != null;
+    });
 }
 
 module.exports = {
-    fetch: fetch,
-    normalize: normalize
+    fetchMatches: fetchMatches
 };
