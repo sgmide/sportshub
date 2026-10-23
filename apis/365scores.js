@@ -1,257 +1,214 @@
-
 "use strict";
 
 const axios = require("axios");
 
-const API_URL = "https://webws.365scores.com/web/games/";
-const TIME_ZONE = "Asia/Kolkata";
+const BASE_URL =
+    "https://webws.365scores.com/web/games/";
 
-function formatDate(dateString) {
-    const parts = dateString.split("-");
+function formatDate(date) {
+    const parts = date.split("-");
     return parts[2] + "/" + parts[1] + "/" + parts[0];
 }
 
-function getSports(settings) {
-    const selected = settings.selected_sports;
-
-    if (Array.isArray(selected)) {
-        const ids = selected
-            .map(Number)
-            .filter(Number.isFinite);
-
-        if (ids.length) return ids;
-    }
-
-    if (selected && typeof selected === "object") {
-        const ids = Object.keys(selected)
-            .filter(function (key) {
-                return selected[key] === true;
-            })
-            .map(Number)
-            .filter(Number.isFinite);
-
-        if (ids.length) return ids;
-    }
-
-    return [Number(settings.selected_sport) || 1];
-}
-
-async function fetch(date, options) {
-    const settings = options.settings || {};
-    const parserSettings =
-        settings.parse &&
-        settings.selected_parser &&
-        settings.parse[settings.selected_parser]
-            ? settings.parse[settings.selected_parser]
-            : {};
-
-    const apiUrl = parserSettings.api_url ||
-        settings.api_url ||
-        API_URL;
-
-    const sports = getSports(settings);
-    const allGames = [];
-
-    for (const sportId of sports) {
-        const response = await axios.get(apiUrl, {
-            timeout: 30000,
-            params: {
-                appTypeId: 5,
-                langId: 1,
-                timezoneName: options.timezone || TIME_ZONE,
-                userCountryId: 113,
-                sports: sportId,
-                startDate: formatDate(date),
-                endDate: formatDate(date),
-                showOdds: true,
-                onlyMajorGames: false,
-                withTop: true
-            },
-            headers: {
-                "User-Agent":
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Referer": "https://www.365scores.com/",
-                "Origin": "https://www.365scores.com"
-            }
-        });
-
-        const data = response.data || {};
-
-        if (!Array.isArray(data.games)) {
-            throw new Error(
-                "365Scores response did not contain games array"
-            );
-        }
-
-        allGames.push.apply(allGames, data.games);
-    }
-
-    return allGames;
-}
-
-function getTimestamp(game) {
-    const value =
-        game.startTime ||
-        game.startTimestamp ||
-        game.startDate ||
-        game.date;
+function toMillis(value) {
+    if (value == null || value === "") return 0;
 
     if (typeof value === "number") {
-        return value < 1000000000000 ? value * 1000 : value;
+        return value < 1000000000000
+            ? value * 1000
+            : value;
     }
 
-    if (value) {
-        const parsed = Date.parse(value);
-        if (Number.isFinite(parsed)) return parsed;
-    }
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
 
-    return 0;
+function getLogo(competitor) {
+    if (!competitor) return "";
+
+    return competitor.imageVersion != null &&
+        competitor.id != null
+        ? ""
+        : (
+            competitor.logo ||
+            competitor.image ||
+            competitor.imageUrl ||
+            ""
+        );
 }
 
 function getStatus(game) {
-    const statusObj = game.status || {};
-    const statusText = String(
-        statusObj.name ||
-        statusObj.longName ||
-        game.statusText ||
-        game.statusDescription ||
-        ""
-    );
+    const status = game.status || {};
+    const text = typeof status === "string"
+        ? status
+        : (status.shortName || status.name || "");
 
-    const upper = statusText.toUpperCase();
-    const gameStatus = Number(game.statusGroup || game.statusId || 0);
+    const minute = game.gameTime != null
+        ? String(game.gameTime)
+        : "";
 
-    if (upper.indexOf("POSTPON") >= 0) return ["PPD", "PPD"];
-    if (upper.indexOf("CANCEL") >= 0) return ["CANC", "CANC"];
-    if (upper.indexOf("ABANDON") >= 0) return ["ABD", "ABD"];
-    if (upper.indexOf("HALF") >= 0) return ["HT", "HT"];
-    if (upper.indexOf("FINISHED") >= 0 ||
-        upper === "FT" ||
-        upper.indexOf("ENDED") >= 0) {
-        return ["FT", "FT"];
-    }
-
-    if (
-        gameStatus === 2 ||
-        gameStatus === 3 ||
-        upper.indexOf("LIVE") >= 0 ||
-        upper.indexOf("IN PLAY") >= 0
-    ) {
-        return ["LIVE", "LIVE"];
-    }
-
-    return ["UPCOMING", "NS"];
+    return minute && /^\d+$/.test(minute)
+        ? minute + "'"
+        : String(text || "NS");
 }
 
-function normalize(game) {
-    const competitors = Array.isArray(game.competitors)
-        ? game.competitors
-        : [];
+function normalize(game, requestedSportId) {
+    const competitors = game.competitors || [];
 
-    const home = competitors.find(function (team) {
-        return String(team.position || team.qualifier || "")
-            .toLowerCase() === "home";
+    const home = competitors.find(function (item) {
+        return item.isHome === true ||
+            item.position === "home" ||
+            item.qualifier === "home";
     }) || competitors[0] || {};
 
-    const away = competitors.find(function (team) {
-        return String(team.position || team.qualifier || "")
-            .toLowerCase() === "away";
+    const away = competitors.find(function (item) {
+        return item.isAway === true ||
+            item.position === "away" ||
+            item.qualifier === "away";
     }) || competitors[1] || {};
 
     const competition = game.competition || {};
-    const country = game.country || {};
-    const timestamp = getTimestamp(game);
+    const gameId = game.id != null ? game.id : game.gameId;
+
+    if (gameId == null) return null;
+
+    const timestamp = toMillis(
+        game.startTime ||
+        game.startTimestamp ||
+        game.startDate ||
+        game.date
+    );
+
     const status = getStatus(game);
-
-    const homeName =
-        home.name ||
-        home.shortName ||
-        home.competitorName ||
-        "";
-
-    const awayName =
-        away.name ||
-        away.shortName ||
-        away.competitorName ||
-        "";
 
     const homeScore = home.score != null
         ? home.score
-        : home.currentScore;
+        : (home.currentScore != null ? home.currentScore : 0);
 
     const awayScore = away.score != null
         ? away.score
-        : away.currentScore;
+        : (away.currentScore != null ? away.currentScore : 0);
 
-    const hasScore =
-        homeScore != null && awayScore != null;
+    const sportId = game.sportId != null
+        ? Number(game.sportId)
+        : (
+            game.sport && game.sport.id != null
+                ? Number(game.sport.id)
+                : Number(requestedSportId)
+        );
 
     return {
-        gameId: String(game.id || game.gameId || ""),
-        fixtureId: String(game.id || game.gameId || ""),
-        apiFixtureId: String(game.id || game.gameId || ""),
+        gameId: Number(gameId),
+        apiFixtureId: Number(gameId),
         apiProvider: "365scores",
-        sportId: Number(game.sportId || game.sport || 1),
-        competitionId: String(
-            game.competitionId ||
-            competition.id ||
-            ""
+
+        competitionId: Number(
+            competition.id != null
+                ? competition.id
+                : (game.competitionId || 0)
         ),
-        league:
-            game.competitionDisplayName ||
-            game.competitionName ||
+        competitionName:
             competition.name ||
-            "Unknown competition",
-        country: country.name || game.countryName || "",
-        season: "",
-        home: homeName,
-        away: awayName,
-        homeLogo:
-            home.imageVersion
-                ? "https://imagecache.365scores.com/image/upload/f_auto,w_120,h_120,c_limit,q_auto:eco/v2/competitors/" +
-                  home.id
-                : "",
-        awayLogo:
-            away.imageVersion
-                ? "https://imagecache.365scores.com/image/upload/f_auto,w_120,h_120,c_limit,q_auto:eco/v2/competitors/" +
-                  away.id
-                : "",
-        homeScore: homeScore == null ? null : Number(homeScore),
-        awayScore: awayScore == null ? null : Number(awayScore),
-        score: hasScore
-            ? String(homeScore) + " - " + String(awayScore)
-            : "VS",
-        status: status[0],
-        shortStatus: status[1],
-        elapsed: game.time || game.minute || "",
-        date: timestamp
-            ? new Intl.DateTimeFormat("en-GB", {
-                  timeZone: TIME_ZONE,
-                  day: "2-digit",
-                  month: "2-digit",
-                  year: "numeric"
-              }).format(new Date(timestamp))
-            : "",
-        time: timestamp
-            ? new Intl.DateTimeFormat("en-GB", {
-                  timeZone: TIME_ZONE,
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  hour12: false
-              }).format(new Date(timestamp))
-            : "",
+            game.competitionName ||
+            "",
+
+        sportId: sportId,
+
+        homeCompetitorId: Number(
+            home.id != null ? home.id : 0
+        ),
+        awayCompetitorId: Number(
+            away.id != null ? away.id : 0
+        ),
+
+        homeTeam: home.name || home.shortName || "Home",
+        awayTeam: away.name || away.shortName || "Away",
+
+        homeLogo: getLogo(home),
+        awayLogo: getLogo(away),
+
+        homeScore: Number(homeScore || 0),
+        awayScore: Number(awayScore || 0),
+
+        goalEvents: game.goalEvents || [],
+
         timestamp: timestamp,
         matchTimeMillis: timestamp,
-        stadium:
-            (game.venue && game.venue.name) ||
-            game.venueName ||
-            "",
-        streamUrl: ""
+
+        status: status,
+        shortStatus: status,
+
+        streamUrl: game.streamUrl || ""
     };
 }
 
+async function fetchMatches(options) {
+    const date = options.date;
+    const settings = options.settings || {};
+    const parserSettings = options.parserSettings || {};
+
+    const baseUrl =
+        parserSettings.api_url ||
+        BASE_URL;
+
+    const sportIds = Array.isArray(options.sportIds)
+        ? options.sportIds
+        : [1];
+
+    const unique = {};
+
+    for (const sportId of sportIds) {
+        try {
+            const response = await axios.get(baseUrl, {
+                timeout: 30000,
+                params: {
+                    appTypeId: 5,
+                    langId: 1,
+                    timezoneName: "Asia/Kolkata",
+                    userCountryId: 113,
+                    sports: sportId,
+                    startDate: formatDate(date),
+                    endDate: formatDate(date),
+                    showOdds: true,
+                    onlyMajorGames: false,
+                    withTop: true
+                },
+                headers: {
+                    "Accept": "application/json",
+                    "User-Agent": "Mozilla/5.0"
+                }
+            });
+
+            const data = response.data || {};
+            const games = Array.isArray(data.games)
+                ? data.games
+                : [];
+
+            games.forEach(function (game) {
+                const match = normalize(game, sportId);
+
+                if (match) {
+                    unique[String(match.gameId)] = match;
+                }
+            });
+
+            console.log(
+                "365Scores sport " + sportId +
+                ": " + games.length + " games"
+            );
+        } catch (error) {
+            console.error(
+                "365Scores sport " + sportId +
+                " failed: " + error.message
+            );
+        }
+    }
+
+    return Object.keys(unique).map(function (id) {
+        return unique[id];
+    });
+}
+
 module.exports = {
-    fetch: fetch,
-    normalize: normalize
+    fetchMatches: fetchMatches
 };
