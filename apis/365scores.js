@@ -21,14 +21,12 @@ function toMillis(value) {
     }
 
     const parsed = Date.parse(value);
-
     return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function getLogo(team) {
     if (!team) return "";
 
-    // Direct image URL ഉണ്ടെങ്കില്‍ ആദ്യം അത് ഉപയോഗിക്കുക.
     const directLogo =
         team.logo ||
         team.imageUrl ||
@@ -45,16 +43,10 @@ function getLogo(team) {
         return directLogo;
     }
 
-    // 365Scores competitor image URL.
     const id = team.id;
     const version = team.imageVersion;
 
-    if (
-        id != null &&
-        version != null &&
-        String(id) !== "" &&
-        String(version) !== ""
-    ) {
+    if (id != null && version != null) {
         return (
             "https://imagecache.365scores.com/image/upload/" +
             "f_png,w_60,h_60,c_limit,q_auto:eco/" +
@@ -98,7 +90,6 @@ function getHomeAway(game) {
 
 function getStatus(game) {
     const status = game.status || {};
-
     let text = "";
 
     if (typeof status === "string") {
@@ -115,9 +106,7 @@ function getStatus(game) {
         game.shortStatus ||
         text;
 
-    if (text) {
-        return String(text);
-    }
+    if (text) return String(text);
 
     const minute = Number(game.gameTime);
 
@@ -131,13 +120,8 @@ function getStatus(game) {
 function getScore(team) {
     if (!team) return 0;
 
-    if (team.score != null) {
-        return team.score;
-    }
-
-    if (team.currentScore != null) {
-        return team.currentScore;
-    }
+    if (team.score != null) return team.score;
+    if (team.currentScore != null) return team.currentScore;
 
     return 0;
 }
@@ -194,31 +178,38 @@ function normalize(game, requestedSportId) {
         game.date
     );
 
-    const sportId = Number(
-        game.sportId != null
-            ? game.sportId
-            : (
-                game.sport &&
-                game.sport.id != null
-                    ? game.sport.id
-                    : requestedSportId
-            )
-    );
+    const rawSportId = game.sportId != null
+        ? game.sportId
+        : (
+            game.sport &&
+            game.sport.id != null
+                ? game.sport.id
+                : requestedSportId
+        );
 
-    const competitionId = Number(
-        competition.id != null
-            ? competition.id
+    const sportId = Number(rawSportId);
+
+    // 365Scores response-ൽ competitionId നേരിട്ട് വരാം.
+    // അതിനാൽ competition object ഉണ്ടെന്ന് നിർബന്ധമില്ല.
+    const rawCompetitionId =
+        game.competitionId != null
+            ? game.competitionId
             : (
-                game.competitionId != null
-                    ? game.competitionId
-                    : 0
-            )
-    );
+                competition.id != null
+                    ? competition.id
+                    : (
+                        game.leagueId != null
+                            ? game.leagueId
+                            : 0
+                    )
+            );
+
+    const competitionId = Number(rawCompetitionId);
 
     const competitionName = String(
-        competition.name ||
         game.competitionDisplayName ||
         game.competitionName ||
+        competition.name ||
         game.league ||
         ""
     );
@@ -236,7 +227,6 @@ function normalize(game, requestedSportId) {
     );
 
     const status = getStatus(game);
-
     const homeScore = getScore(home);
     const awayScore = getScore(away);
 
@@ -254,12 +244,20 @@ function normalize(game, requestedSportId) {
     const homeLogo = getLogo(home);
     const awayLogo = getLogo(away);
 
-    // Logo debugging: GitHub Actions log-ല്‍ URL കാണാം.
     if (!homeLogo || !awayLogo) {
         console.log(
             "Logo missing for game " + gameId +
             ": home=" + homeLogo +
             ", away=" + awayLogo
+        );
+    }
+
+    if (!competitionId || !competitionName) {
+        console.log(
+            "Competition information missing for game " +
+            gameId +
+            ": competitionId=" + competitionId +
+            ", competitionName=" + competitionName
         );
     }
 
@@ -272,7 +270,9 @@ function normalize(game, requestedSportId) {
         competitionName: competitionName,
         league: competitionName,
 
-        sportId: sportId,
+        sportId: Number.isFinite(sportId)
+            ? sportId
+            : requestedSportId,
 
         homeCompetitorId: Number(home.id || 0),
         awayCompetitorId: Number(away.id || 0),
@@ -408,10 +408,7 @@ async function fetchMatches(options) {
                     return;
                 }
 
-                const merged = Object.assign(
-                    {},
-                    previous
-                );
+                const merged = Object.assign({}, previous);
 
                 Object.keys(match).forEach(function (key) {
                     const value = match[key];
@@ -429,7 +426,6 @@ async function fetchMatches(options) {
                     }
                 });
 
-                // മുമ്പുള്ള goal events നഷ്ടപ്പെടാതിരിക്കുക.
                 if (
                     Array.isArray(previous.goalEvents) &&
                     previous.goalEvents.length > 0 &&
