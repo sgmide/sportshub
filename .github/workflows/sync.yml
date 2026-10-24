@@ -21,41 +21,49 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      # --------------------------------------------------
       # 1. Checkout repository
-      # --------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --------------------------------------------------
       # 2. Setup Node.js
-      # --------------------------------------------------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # --------------------------------------------------
       # 3. Install dependencies
-      # --------------------------------------------------
       - name: Install dependencies
+        shell: bash
         run: |
+          set -Eeuo pipefail
+
+          echo "Checking Node.js..."
+          node --version
+          npm --version
+
+          echo "Installing dependencies..."
+
           if [ -f package-lock.json ]; then
             npm ci
           else
             npm install
           fi
 
-      # --------------------------------------------------
+          echo "Dependencies installed successfully."
+
       # 4. Check Firebase Auto Sync settings
-      # --------------------------------------------------
       - name: Check Automatic Sync and Interval
         id: autosync
+        shell: bash
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
+          set -Eeuo pipefail
+
+          echo "Starting automatic sync check..."
+
           node <<'NODE'
           const admin = require("firebase-admin");
           const fs = require("fs");
@@ -66,14 +74,19 @@ jobs:
                 !process.env.FIREBASE_SERVICE_ACCOUNT ||
                 !process.env.FIREBASE_DATABASE_URL
               ) {
-                throw new Error("Firebase secrets are missing.");
+                throw new Error(
+                  "Firebase secrets are missing."
+                );
               }
 
               admin.initializeApp({
                 credential: admin.credential.cert(
-                  JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+                  JSON.parse(
+                    process.env.FIREBASE_SERVICE_ACCOUNT
+                  )
                 ),
-                databaseURL: process.env.FIREBASE_DATABASE_URL
+                databaseURL:
+                  process.env.FIREBASE_DATABASE_URL
               });
 
               const snapshot = await admin.database()
@@ -91,7 +104,7 @@ jobs:
 
               if (![5, 15, 30, 60].includes(interval)) {
                 console.log(
-                  "Invalid interval. Using default 15 minutes."
+                  "Invalid interval. Using 15 minutes."
                 );
                 interval = 15;
               }
@@ -99,7 +112,10 @@ jobs:
               let shouldSync = false;
               let reason = "";
 
-              if (process.env.EVENT_NAME === "workflow_dispatch") {
+              if (
+                process.env.EVENT_NAME ===
+                "workflow_dispatch"
+              ) {
                 shouldSync = true;
                 reason = "Manual sync requested.";
               } else if (
@@ -113,21 +129,26 @@ jobs:
                   );
 
                   const elapsed = Date.now() - lastSync;
-                  const intervalMs = interval * 60 * 1000;
+                  const intervalMs =
+                    interval * 60 * 1000;
 
-                  if (lastSync <= 0 || elapsed >= intervalMs) {
+                  if (
+                    lastSync <= 0 ||
+                    elapsed >= intervalMs
+                  ) {
                     shouldSync = true;
-                    reason = "Selected interval has elapsed.";
+                    reason =
+                      "Selected interval has elapsed.";
                   } else {
-                    const remainingSeconds = Math.ceil(
+                    const remaining = Math.ceil(
                       (intervalMs - elapsed) / 1000
                     );
 
                     reason =
                       "Waiting approximately " +
-                      Math.floor(remainingSeconds / 60) +
+                      Math.floor(remaining / 60) +
                       " minute(s) and " +
-                      (remainingSeconds % 60) +
+                      (remaining % 60) +
                       " second(s).";
                   }
                 }
@@ -147,7 +168,8 @@ jobs:
                   "should_sync=" + shouldSync,
                   "interval=" + interval,
                   "auto_sync_enabled=" + enabled,
-                  "reason=" + reason.replace(/[\r\n]/g, " ")
+                  "reason=" +
+                    reason.replace(/[\r\n]/g, " ")
                 ].join("\n") + "\n"
               );
             } finally {
@@ -164,22 +186,27 @@ jobs:
           main().catch(function (error) {
             console.error(
               "Automatic sync check failed:",
-              error.message
+              error.stack || error.message
             );
             process.exit(1);
           });
           NODE
 
-      # --------------------------------------------------
+          echo "Automatic sync check finished."
+
       # 5. Select API provider from Firebase
-      # --------------------------------------------------
       - name: Select API from Firebase
         id: parser
         if: steps.autosync.outputs.should_sync == 'true'
+        shell: bash
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
         run: |
+          set -Eeuo pipefail
+
+          echo "Reading selected API from Firebase..."
+
           node <<'NODE'
           const admin = require("firebase-admin");
           const fs = require("fs");
@@ -190,14 +217,19 @@ jobs:
                 !process.env.FIREBASE_SERVICE_ACCOUNT ||
                 !process.env.FIREBASE_DATABASE_URL
               ) {
-                throw new Error("Firebase secrets are missing.");
+                throw new Error(
+                  "Firebase secrets are missing."
+                );
               }
 
               admin.initializeApp({
                 credential: admin.credential.cert(
-                  JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+                  JSON.parse(
+                    process.env.FIREBASE_SERVICE_ACCOUNT
+                  )
                 ),
-                databaseURL: process.env.FIREBASE_DATABASE_URL
+                databaseURL:
+                  process.env.FIREBASE_DATABASE_URL
               });
 
               const snapshot = await admin.database()
@@ -205,7 +237,8 @@ jobs:
                 .once("value");
 
               const settings = snapshot.val() || {};
-              const parserKey = settings.selected_parser || "parse1";
+              const parserKey =
+                settings.selected_parser || "parse1";
 
               const parser =
                 settings.parse &&
@@ -213,7 +246,8 @@ jobs:
 
               if (!parser) {
                 throw new Error(
-                  "Selected parser not found: " + parserKey
+                  "Selected parser not found: " +
+                  parserKey
                 );
               }
 
@@ -224,20 +258,28 @@ jobs:
               let provider;
 
               if (
-                apiParser === "365" ||
-                apiParser === "365scores"
+                ["365", "365scores", "365-scores"]
+                  .includes(apiParser)
               ) {
                 provider = "365scores";
               } else if (
-                apiParser === "api_parser" ||
-                apiParser === "apifootball" ||
-                apiParser === "api-football" ||
-                apiParser === "football"
+                ["king", "totalsportslive"]
+                  .includes(apiParser)
+              ) {
+                provider = "king";
+              } else if (
+                [
+                  "api_parser",
+                  "apifootball",
+                  "api-football",
+                  "football"
+                ].includes(apiParser)
               ) {
                 provider = "api-football";
               } else {
                 throw new Error(
-                  "Unsupported API parser: " + apiParser
+                  "Unsupported API parser: " +
+                  apiParser
                 );
               }
 
@@ -263,37 +305,52 @@ jobs:
           main().catch(function (error) {
             console.error(
               "API selection failed:",
-              error.message
+              error.stack || error.message
             );
             process.exit(1);
           });
           NODE
 
-      # --------------------------------------------------
-      # 6. Run complete Firebase sync through index.js
-      # --------------------------------------------------
+          echo "API provider selection finished."
+
+      # 6. Run complete Firebase sync
       - name: Run SportsHub Sync
         id: run_sync
         if: steps.autosync.outputs.should_sync == 'true'
+        shell: bash
         env:
           API_PROVIDER: ${{ steps.parser.outputs.provider }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
-        run: node index.js
+        run: |
+          set -Eeuo pipefail
 
-      # --------------------------------------------------
+          echo "Starting SportsHub sync..."
+          echo "Provider: ${API_PROVIDER:-not selected}"
+          echo "Executing index.js..."
+
+          node --trace-uncaught \
+            --unhandled-rejections=strict index.js
+
+          echo "SportsHub sync script finished successfully."
+
       # 7. Save successful sync timestamp
-      # --------------------------------------------------
       - name: Save Successful Sync Time
+        id: save_time
         if: >-
           success() &&
           steps.autosync.outputs.should_sync == 'true' &&
           steps.run_sync.outcome == 'success'
+        shell: bash
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
         run: |
+          set -Eeuo pipefail
+
+          echo "Saving successful sync timestamp..."
+
           node <<'NODE'
           const admin = require("firebase-admin");
 
@@ -303,14 +360,19 @@ jobs:
                 !process.env.FIREBASE_SERVICE_ACCOUNT ||
                 !process.env.FIREBASE_DATABASE_URL
               ) {
-                throw new Error("Firebase secrets are missing.");
+                throw new Error(
+                  "Firebase secrets are missing."
+                );
               }
 
               admin.initializeApp({
                 credential: admin.credential.cert(
-                  JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+                  JSON.parse(
+                    process.env.FIREBASE_SERVICE_ACCOUNT
+                  )
                 ),
-                databaseURL: process.env.FIREBASE_DATABASE_URL
+                databaseURL:
+                  process.env.FIREBASE_DATABASE_URL
               });
 
               const now = Date.now();
@@ -339,33 +401,46 @@ jobs:
           main().catch(function (error) {
             console.error(
               "Failed to save sync timestamp:",
-              error.message
+              error.stack || error.message
             );
             process.exit(1);
           });
           NODE
 
-      # --------------------------------------------------
-      # 8. Workflow summary
-      # --------------------------------------------------
+          echo "Timestamp update completed."
+
+      # 8. Detailed workflow summary
       - name: Workflow Summary
         if: always()
+        shell: bash
         env:
           SHOULD_SYNC: ${{ steps.autosync.outputs.should_sync }}
           SELECTED_INTERVAL: ${{ steps.autosync.outputs.interval }}
           AUTO_SYNC_ENABLED: ${{ steps.autosync.outputs.auto_sync_enabled }}
           SYNC_REASON: ${{ steps.autosync.outputs.reason }}
           SELECTED_PROVIDER: ${{ steps.parser.outputs.provider }}
+          AUTOSYNC_STATUS: ${{ steps.autosync.outcome }}
+          PARSER_STATUS: ${{ steps.parser.outcome }}
+          RUN_SYNC_STATUS: ${{ steps.run_sync.outcome }}
+          SAVE_TIME_STATUS: ${{ steps.save_time.outcome }}
         run: |
           {
             echo "## SportsHub API Sync"
             echo ""
-            echo "- Event: $GITHUB_EVENT_NAME"
-            echo "- Branch: $GITHUB_REF_NAME"
-            echo "- Automatic Sync: ${AUTO_SYNC_ENABLED:-unknown}"
-            echo "- Should sync: ${SHOULD_SYNC:-unknown}"
-            echo "- Selected interval: ${SELECTED_INTERVAL:-unknown} minutes"
-            echo "- Provider: ${SELECTED_PROVIDER:-not selected}"
-            echo "- Reason: ${SYNC_REASON:-not available}"
-            echo "- Job status: ${{ job.status }}"
+            echo "| Item | Result |"
+            echo "|---|---|"
+            echo "| Event | $GITHUB_EVENT_NAME |"
+            echo "| Branch | $GITHUB_REF_NAME |"
+            echo "| Automatic Sync | ${AUTO_SYNC_ENABLED:-unknown} |"
+            echo "| Should sync | ${SHOULD_SYNC:-unknown} |"
+            echo "| Interval | ${SELECTED_INTERVAL:-unknown} minutes |"
+            echo "| Provider | ${SELECTED_PROVIDER:-not selected} |"
+            echo "| Reason | ${SYNC_REASON:-not available} |"
+            echo "| Check settings | ${AUTOSYNC_STATUS:-not run} |"
+            echo "| Select provider | ${PARSER_STATUS:-not run} |"
+            echo "| Run sync | ${RUN_SYNC_STATUS:-not run} |"
+            echo "| Save timestamp | ${SAVE_TIME_STATUS:-not run} |"
+            echo "| Job status | ${{ job.status }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Workflow summary generated."
