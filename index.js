@@ -1,22 +1,42 @@
+
 "use strict";
 
 const admin = require("firebase-admin");
 const path = require("path");
 
 const TIME_ZONE = "Asia/Kolkata";
-const DEFAULT_PROVIDER = "365scores";
 const FETCH_DATES = [-1, 0, 1];
 
-function log(message) {
-    console.log(message);
+if (!admin.apps.length) {
+    const serviceAccountJson =
+        process.env.FIREBASE_SERVICE_ACCOUNT;
+
+    if (!serviceAccountJson) {
+        throw new Error(
+            "Missing FIREBASE_SERVICE_ACCOUNT secret."
+        );
+    }
+
+    admin.initializeApp({
+        credential: admin.credential.cert(
+            JSON.parse(serviceAccountJson)
+        ),
+        databaseURL: process.env.FIREBASE_DATABASE_URL
+    });
 }
 
-function getDateString(offset) {
+const db = admin.database();
+const rootRef = db.ref("/");
+
+function number(value) {
+    const result = Number(value);
+    return Number.isFinite(result) ? result : 0;
+}
+
+function dateString(offset) {
     const date = new Date();
 
-    date.setUTCDate(date.getUTCDate() + offset);
-
-    const parts = new Intl.DateTimeFormat("en-CA", {
+    const parts = new Intl.DateTimeFormat("en-GB", {
         timeZone: TIME_ZONE,
         year: "numeric",
         month: "2-digit",
@@ -29,287 +49,305 @@ function getDateString(offset) {
         values[part.type] = part.value;
     });
 
-    return values.year + "-" + values.month + "-" + values.day;
+    /*
+     * Build a date around UTC midday to avoid timezone
+     * boundary problems when moving between calendar days.
+     */
+    const base = new Date(
+        Date.UTC(
+            Number(values.year),
+            Number(values.month) - 1,
+            Number(values.day),
+            12,
+            0,
+            0
+        )
+    );
+
+    base.setUTCDate(base.getUTCDate() + offset);
+
+    const resultParts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: TIME_ZONE,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+    }).formatToParts(base);
+
+    const result = {};
+
+    resultParts.forEach(function (part) {
+        result[part.type] = part.value;
+    });
+
+    return result.day + "/" +
+        result.month + "/" +
+        result.year;
 }
 
 function normalizeProviderName(value) {
-    const name = String(value || "")
+    const provider = String(value || "")
         .trim()
-        .toLowerCase()
-        .replace(/[_\s]/g, "-");
+        .toLowerCase();
 
     if (
-        name === "365" ||
-        name === "365score" ||
-        name === "365scores"
+        provider === "365" ||
+        provider === "365scores" ||
+        provider === "365-scores"
     ) {
         return "365scores";
     }
 
-    if (name === "king") {
-        return "king";
-    }
-
     if (
-        name === "api-parser" ||
-        name === "api-football" ||
-        name === "apifootball"
+        provider === "api-football" ||
+        provider === "apifootball"
     ) {
         return "api-football";
-    }
-
-    return name || DEFAULT_PROVIDER;
-}
-
-function getProviderName(settings) {
-    settings = settings || {};
-
-    const selectedParser = settings.selected_parser || "parse1";
-    const parseSettings = settings.parse || {};
-    const selectedConfig = parseSettings[selectedParser] || {};
-
-    const providerValue =
-        selectedConfig.api_parser ||
-        selectedConfig.apiParser ||
-        settings.api_parser ||
-        DEFAULT_PROVIDER;
-
-    return normalizeProviderName(providerValue);
-}
-
-function getSelectedSports(settings) {
-    settings = settings || {};
-
-    const selected = settings.selected_sports;
-    const result = [];
-
-    if (Array.isArray(selected)) {
-        selected.forEach(function (item) {
-            if (item !== null && item !== undefined && item !== "") {
-                result.push(String(item));
-            }
-        });
-    } else if (selected && typeof selected === "object") {
-        Object.keys(selected).forEach(function (id) {
-            if (selected[id] === true) {
-                result.push(String(id));
-            }
-        });
-    }
-
-    return Array.from(new Set(result));
-}
-
-function normalizeCompetitionId(match) {
-    if (!match) {
-        return "0";
-    }
-
-    const possibleIds = [
-        match.competitionId,
-        match.leagueId,
-        match.competition_id,
-        match.league_id
-    ];
-
-    for (let i = 0; i < possibleIds.length; i++) {
-        const value = possibleIds[i];
-
-        if (
-            value !== undefined &&
-            value !== null &&
-            String(value).trim() !== "" &&
-            String(value) !== "0"
-        ) {
-            return String(value);
-        }
-    }
-
-    return "0";
-}
-
-function normalizeMatchId(match) {
-    if (!match) {
-        return "";
-    }
-
-    const value =
-        match.gameId ||
-        match.apiFixtureId ||
-        match.fixtureId ||
-        match.id;
-
-    return value === undefined || value === null
-        ? ""
-        : String(value);
-}
-
-function getCompetitionName(match) {
-    return String(
-        match.competitionName ||
-        match.leagueName ||
-        match.league ||
-        match.competition ||
-        "Unknown Competition"
-    );
-}
-
-function getMatchDate(match) {
-    return String(
-        match.date ||
-        match.matchDate ||
-        match.startDate ||
-        ""
-    );
-}
-
-function loadProvider(providerName) {
-    const providerPath = path.join(
-        __dirname,
-        "apis",
-        providerName + ".js"
-    );
-
-    const provider = require(providerPath);
-
-    if (!provider || typeof provider.fetchMatches !== "function") {
-        throw new Error(
-            "Provider " + providerName +
-            " must export fetchMatches(options)."
-        );
     }
 
     return provider;
 }
 
-function preserveOldFields(newMatch, oldMatch) {
-    if (!oldMatch) {
-        return newMatch;
-    }
+function getSelectedParser(settings) {
+    const parserName = String(
+        settings.selected_parser || ""
+    );
 
-    const fieldsToPreserve = [
-        "homeLogo",
-        "awayLogo",
-        "streamUrl",
-        "stadium",
-        "goalEvents"
-    ];
+    const parserConfig =
+        settings.parse &&
+        settings.parse[parserName]
+            ? settings.parse[parserName]
+            : {};
 
-    fieldsToPreserve.forEach(function (field) {
-        const newValue = newMatch[field];
-        const oldValue = oldMatch[field];
+    const provider = normalizeProviderName(
+        parserConfig.api_parser ||
+        settings.api_parser ||
+        settings.provider ||
+        "365scores"
+    );
 
-        const empty =
-            newValue === undefined ||
-            newValue === null ||
-            newValue === "";
-
-        if (
-            empty &&
-            oldValue !== undefined &&
-            oldValue !== null
-        ) {
-            newMatch[field] = oldValue;
-        }
-    });
-
-    return newMatch;
+    return {
+        parserName: parserName,
+        provider: provider,
+        config: parserConfig
+    };
 }
 
-function getExistingSelection(root) {
-    root = root || {};
+function getSelectedSports(settings, parser) {
+    const config = parser.config || {};
 
-    const oldSelection = root.competition_selection || {};
-    const oldCompetitions = root.competitions || {};
-    const selection = {};
+    let value =
+        config.selectedSports ||
+        config.sportIds ||
+        settings.selectedSports ||
+        settings.selected_sports ||
+        settings.sportIds ||
+        settings.sport_ids ||
+        [];
 
-    Object.keys(oldSelection).forEach(function (id) {
-        selection[String(id)] = oldSelection[id] === true;
+    if (!Array.isArray(value)) {
+        if (typeof value === "string") {
+            value = value.split(",");
+        } else {
+            value = [];
+        }
+    }
+
+    return value
+        .map(function (item) {
+            if (typeof item === "object" && item !== null) {
+                return number(item.id || item.sportId);
+            }
+
+            return number(item);
+        })
+        .filter(function (id) {
+            return id > 0;
+        })
+        .filter(function (id, index, list) {
+            return list.indexOf(id) === index;
+        });
+}
+
+function normalizeId(value) {
+    if (value == null) {
+        return "";
+    }
+
+    return String(value).trim();
+}
+
+function getMatchId(match) {
+    return normalizeId(
+        match.gameId ||
+        match.apiFixtureId ||
+        match.fixtureId ||
+        match.id
+    );
+}
+
+function getCompetitionId(match) {
+    return normalizeId(
+        match.competitionId ||
+        match.competition_id ||
+        (
+            match.competition &&
+            match.competition.id
+        )
+    );
+}
+
+function getCompetitionName(match) {
+    return String(
+        match.competitionName ||
+        match.competitionDisplayName ||
+        (
+            match.competition &&
+            match.competition.name
+        ) ||
+        match.league ||
+        ""
+    );
+}
+
+function loadProvider(providerName) {
+    if (providerName !== "365scores") {
+        throw new Error(
+            "Unsupported provider in this version: " +
+            providerName
+        );
+    }
+
+    return require(
+        path.join(__dirname, "apis", "365scores.js")
+    );
+}
+
+function normalizeCompetition(item) {
+    return {
+        id: number(item.id),
+        competitionId: number(item.id),
+        sportId: number(item.sportId),
+        countryId: number(item.countryId),
+        name: String(item.name || ""),
+        nameForURL: String(item.nameForURL || ""),
+        hideOnCatalog: item.hideOnCatalog === true,
+        hideOnSearch: item.hideOnSearch === true,
+        isInternational: item.isInternational === true,
+        totalGames: number(item.totalGames),
+        liveGames: number(item.liveGames),
+        provider: "365scores"
+    };
+}
+
+function buildCatalog(catalog, matches, selectedSports) {
+    const result = {};
+    const allowedSports = {};
+
+    selectedSports.forEach(function (id) {
+        allowedSports[String(id)] = true;
     });
 
-    Object.keys(oldCompetitions).forEach(function (id) {
-        if (selection[String(id)] === undefined) {
-            selection[String(id)] =
-                oldCompetitions[id] &&
-                oldCompetitions[id].selected === true;
+    function addCompetition(item) {
+        const id = normalizeId(
+            item.id || item.competitionId
+        );
+
+        if (!id) {
+            return;
+        }
+
+        const sportId = number(item.sportId);
+
+        if (
+            selectedSports.length &&
+            !allowedSports[String(sportId)]
+        ) {
+            return;
+        }
+
+        if (item.hideOnCatalog === true) {
+            return;
+        }
+
+        const competition = normalizeCompetition({
+            id: id,
+            sportId: sportId,
+            countryId: item.countryId,
+            name:
+                item.name ||
+                item.competitionDisplayName ||
+                "",
+            nameForURL: item.nameForURL,
+            hideOnCatalog: item.hideOnCatalog,
+            hideOnSearch: item.hideOnSearch,
+            isInternational: item.isInternational,
+            totalGames: item.totalGames,
+            liveGames: item.liveGames
+        });
+
+        result[id] = competition;
+    }
+
+    (catalog.competitions || []).forEach(addCompetition);
+
+    /*
+     * Add competitions found in games when the catalog
+     * endpoint does not provide them.
+     */
+    (matches || []).forEach(function (match) {
+        const id = getCompetitionId(match);
+
+        if (!id || result[id]) {
+            return;
+        }
+
+        addCompetition({
+            id: id,
+            sportId: match.sportId,
+            name: getCompetitionName(match)
+        });
+    });
+
+    return result;
+}
+
+function buildSelection(catalog, oldSelection, providerChanged) {
+    const selection = {};
+
+    Object.keys(catalog).forEach(function (id) {
+        if (!providerChanged && oldSelection &&
+            oldSelection[id] === true) {
+            selection[id] = true;
+        } else {
+            selection[id] = false;
         }
     });
 
     return selection;
 }
 
-function buildCompetitionCatalog(matches, oldRoot, providerChanged) {
-    const competitions = {};
-    const selection = providerChanged
-        ? {}
-        : getExistingSelection(oldRoot);
+function filterMatches(matches, selection, selectedSports) {
+    const allowedSports = {};
+
+    selectedSports.forEach(function (id) {
+        allowedSports[String(id)] = true;
+    });
+
+    const result = {};
+    const seen = {};
 
     matches.forEach(function (match) {
-        const competitionId = normalizeCompetitionId(match);
+        const id = getMatchId(match);
+        const competitionId = getCompetitionId(match);
 
-        if (competitionId === "0") {
+        if (!id || !competitionId || seen[id]) {
             return;
         }
 
-        const competitionName = getCompetitionName(match);
-
-        if (!competitions[competitionId]) {
-            const oldCompetition =
-                !providerChanged &&
-                oldRoot &&
-                oldRoot.competitions &&
-                oldRoot.competitions[competitionId]
-                    ? oldRoot.competitions[competitionId]
-                    : {};
-
-            if (selection[competitionId] === undefined) {
-                selection[competitionId] =
-                    oldCompetition.selected === true;
-            }
-
-            competitions[competitionId] = Object.assign(
-                {},
-                oldCompetition,
-                {
-                    id: competitionId,
-                    name: competitionName,
-                    selected: selection[competitionId] === true
-                }
-            );
-
-            if (match.sportId !== undefined) {
-                competitions[competitionId].sportId =
-                    String(match.sportId);
-            }
-
-            if (match.sportName) {
-                competitions[competitionId].sportName =
-                    String(match.sportName);
-            }
-        }
-
-        competitions[competitionId].selected =
-            selection[competitionId] === true;
-    });
-
-    return {
-        competitions: competitions,
-        selection: selection
-    };
-}
-
-function buildSelectedMatches(matches, selection, oldRoot, providerChanged) {
-    const result = {};
-    const oldMatches =
-        !providerChanged && oldRoot && oldRoot.matches
-            ? oldRoot.matches
-            : {};
-
-    matches.forEach(function (match) {
-        const matchId = normalizeMatchId(match);
-        const competitionId = normalizeCompetitionId(match);
-
-        if (!matchId || competitionId === "0") {
+        if (
+            selectedSports.length &&
+            !allowedSports[String(number(match.sportId))]
+        ) {
             return;
         }
 
@@ -317,285 +355,247 @@ function buildSelectedMatches(matches, selection, oldRoot, providerChanged) {
             return;
         }
 
-        const savedMatch = Object.assign({}, match);
+        seen[id] = true;
 
-        savedMatch.gameId = matchId;
-        savedMatch.competitionId = competitionId;
+        const record = Object.assign({}, match, {
+            gameId: id,
+            apiFixtureId: id,
+            competitionId: number(competitionId),
+            apiProvider: "365scores"
+        });
 
-        if (!savedMatch.competitionName) {
-            savedMatch.competitionName =
-                getCompetitionName(match);
-        }
-
-        result[matchId] = preserveOldFields(
-            savedMatch,
-            oldMatches[matchId]
-        );
+        result[id] = record;
     });
 
     return result;
 }
 
-async function fetchAllMatches(provider, sportIds) {
-    const allMatches = [];
-    const seenIds = new Set();
+function mergeCatalog(oldCatalog, newCatalog) {
+    const merged = Object.assign({}, oldCatalog || {});
 
-    for (let i = 0; i < FETCH_DATES.length; i++) {
-        const offset = FETCH_DATES[i];
-        const date = getDateString(offset);
+    Object.keys(newCatalog).forEach(function (id) {
+        merged[id] = Object.assign(
+            {},
+            merged[id] || {},
+            newCatalog[id]
+        );
+    });
 
-        log("");
-        log("Fetching matches for date: " + date);
-
-        const fetched = await provider.fetchMatches({
-            date: date,
-            sportIds: sportIds,
-            timezone: TIME_ZONE,
-            timeZone: TIME_ZONE
-        });
-
-        if (!Array.isArray(fetched)) {
-            throw new Error(
-                "Provider returned invalid matches for " + date
-            );
-        }
-
-        log("Fetched " + fetched.length + " matches for " + date);
-
-        fetched.forEach(function (match) {
-            const id = normalizeMatchId(match);
-
-            if (!id) {
-                return;
-            }
-
-            if (!seenIds.has(id)) {
-                seenIds.add(id);
-                allMatches.push(match);
-            }
-        });
-    }
-
-    return allMatches;
+    return merged;
 }
 
 async function main() {
-    if (!admin.apps.length) {
-        const serviceAccountText =
-            process.env.FIREBASE_SERVICE_ACCOUNT;
-
-        if (!serviceAccountText) {
-            throw new Error(
-                "Missing FIREBASE_SERVICE_ACCOUNT GitHub secret."
-            );
-        }
-
-        const serviceAccount = JSON.parse(serviceAccountText);
-
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount),
-            databaseURL: process.env.FIREBASE_DATABASE_URL
-        });
-    }
-
-    const db = admin.database();
-    const rootRef = db.ref("/");
     const snapshot = await rootRef.once("value");
     const root = snapshot.val() || {};
 
     const settings = root.settings || {};
-    const selectedParser = settings.selected_parser || "parse1";
-    const providerName = getProviderName(settings);
-    const previousProvider = normalizeProviderName(
+    const parser = getSelectedParser(settings);
+    const provider = loadProvider(parser.provider);
+
+    const selectedSports = getSelectedSports(
+        settings,
+        parser
+    );
+
+    if (!selectedSports.length) {
+        throw new Error(
+            "No sports selected. Select sports in Admin before running sync."
+        );
+    }
+
+    const oldProvider = normalizeProviderName(
         settings.last_synced_api_provider || ""
     );
 
     const providerChanged =
-        !!settings.last_synced_api_provider &&
-        previousProvider !== providerName;
+        oldProvider !== "" &&
+        oldProvider !== parser.provider;
 
-    const sportIds = getSelectedSports(settings);
-
-    log("Selected parser: " + selectedParser);
-    log("Current provider: " + providerName);
-    log("Previous provider: " + previousProvider);
-    log("Provider changed: " + providerChanged);
-    log("Selected sports: " + sportIds.join(", "));
-
-    if (sportIds.length === 0) {
-        throw new Error(
-            "No sports selected. Select at least one sport first."
-        );
-    }
-
-    const provider = loadProvider(providerName);
-
-    const matches = await fetchAllMatches(provider, sportIds);
-
-    log("");
-    log("Total unique fetched matches: " + matches.length);
-
-    if (matches.length === 0) {
-        throw new Error(
-            "API returned zero matches. Existing Firebase data was not changed."
-        );
-    }
-
-    let matchesWithCompetitionId = 0;
-    let matchesWithoutCompetitionId = 0;
-
-    matches.forEach(function (match) {
-        if (normalizeCompetitionId(match) === "0") {
-            matchesWithoutCompetitionId++;
-        } else {
-            matchesWithCompetitionId++;
-        }
-    });
-
-    log("Matches with competition ID: " + matchesWithCompetitionId);
-    log("Matches without competition ID: " + matchesWithoutCompetitionId);
-
-    const catalog = buildCompetitionCatalog(
-        matches,
-        root,
-        providerChanged
-    );
-
-    const competitions = catalog.competitions;
-    const selection = catalog.selection;
-
-    const selectedCompetitionIds = Object.keys(selection).filter(
-        function (id) {
-            return selection[id] === true;
-        }
-    );
-
-    log("Competitions found: " + Object.keys(competitions).length);
-    log(
-        "Selected competition IDs: " +
-        selectedCompetitionIds.join(", ")
-    );
-
-    log(
-        "API competition IDs: " +
-        Object.keys(competitions).slice(0, 50).join(", ")
-    );
-
-    const selectedMatches = buildSelectedMatches(
-        matches,
-        selection,
-        root,
-        providerChanged
-    );
-
-    log("Matches for selected competitions: " +
-        Object.keys(selectedMatches).length);
-
-    const now = Date.now();
-
-    const newSettings = Object.assign({}, settings, {
-        last_synced_api_provider: providerName,
-        lastSuccessfulSync: now,
-        last_sync_time: now,
-        last_sync_status: "success",
-        selected_parser: selectedParser
-    });
+    console.log("Provider:", parser.provider);
+    console.log("Selected sports:", selectedSports);
 
     /*
-     * Provider changed:
-     * Save the new competition catalog with all competitions
-     * unselected, and clear matches from the old provider.
-     * The user can then select competitions and sync again.
+     * 1. Fetch catalog data.
+     */
+    let catalog = {
+        sports: [],
+        countries: [],
+        competitions: []
+    };
+
+    if (typeof provider.fetchCatalog === "function") {
+        catalog = await provider.fetchCatalog();
+    }
+
+    console.log(
+        "Catalog sports:",
+        catalog.sports.length
+    );
+
+    console.log(
+        "Catalog competitions:",
+        catalog.competitions.length
+    );
+
+    /*
+     * 2. Fetch games for yesterday, today and tomorrow.
+     */
+    const allMatches = [];
+    const seenMatches = {};
+
+    for (let i = 0; i < FETCH_DATES.length; i++) {
+        const offset = FETCH_DATES[i];
+        const date = dateString(offset);
+
+        const matches = await provider.fetchMatches({
+            sportIds: selectedSports,
+            startDate: date,
+            endDate: date
+        });
+
+        console.log(
+            "Date:",
+            date,
+            "matches:",
+            matches.length
+        );
+
+        matches.forEach(function (match) {
+            const id = getMatchId(match);
+
+            if (!id || seenMatches[id]) {
+                return;
+            }
+
+            seenMatches[id] = true;
+            allMatches.push(match);
+        });
+    }
+
+    console.log(
+        "Unique fetched matches:",
+        allMatches.length
+    );
+
+    /*
+     * 3. Build the competition catalog.
+     */
+    const newCatalog = buildCatalog(
+        catalog,
+        allMatches,
+        selectedSports
+    );
+
+    const oldSelection =
+        root.competition_selection || {};
+
+    const oldCompetitions =
+        root.competitions || {};
+
+    const selection = buildSelection(
+        newCatalog,
+        oldSelection,
+        providerChanged
+    );
+
+    /*
+     * When the provider changes, reset selections and
+     * do not mix records from the previous provider.
      */
     if (providerChanged) {
-        const emptySelection = {};
-
-        Object.keys(competitions).forEach(function (id) {
-            competitions[id].selected = false;
-            emptySelection[id] = false;
-        });
-
-        await rootRef.update({
-            competitions: competitions,
-            competition_selection: emptySelection,
-            matches: null,
-            settings: newSettings
-        });
-
-        log(
-            "Provider changed. New competition catalog saved; " +
-            "old matches cleared. Select competitions and sync again."
+        console.log(
+            "Provider changed. Resetting competition selection."
         );
 
+        await rootRef.update({
+            competitions: newCatalog,
+            competition_selection: selection,
+            matches: {},
+            "settings/last_synced_api_provider":
+                parser.provider,
+            "settings/last_sync_status": "success",
+            "settings/last_sync_error": null,
+            "settings/last_sync_time": Date.now()
+        });
+
+        console.log("Catalog saved. Select competitions next.");
         return;
     }
 
     /*
-     * Important fix:
-     * If no competitions are selected, still save the competition
-     * catalog and selection map. Do not delete or replace matches.
+     * 4. Determine selected competition matches.
+     */
+    const selectedMatches = filterMatches(
+        allMatches,
+        selection,
+        selectedSports
+    );
+
+    const updates = {};
+
+    updates.competitions = mergeCatalog(
+        oldCompetitions,
+        newCatalog
+    );
+
+    updates.competition_selection = Object.assign(
+        {},
+        oldSelection,
+        selection
+    );
+
+    updates["settings/last_synced_api_provider"] =
+        parser.provider;
+
+    updates["settings/last_sync_status"] = "success";
+    updates["settings/last_sync_error"] = null;
+    updates["settings/last_sync_time"] = Date.now();
+
+    /*
+     * Do not clear existing matches when no competitions
+     * have been selected or no selected matches were found.
      */
     if (Object.keys(selectedMatches).length === 0) {
-        newSettings.last_sync_status = "catalog_updated";
+        await rootRef.update(updates);
 
-        await rootRef.update({
-            competitions: competitions,
-            competition_selection: selection,
-            settings: newSettings
-        });
-
-        log(
-            "No selected-competition matches found. " +
-            "Competition catalog saved successfully. " +
-            "Existing matches were preserved."
-        );
-
-        log(
-            "Open Competitions in the admin app, select competitions, " +
-            "save, and run sync again."
+        console.log(
+            "Catalog updated. No selected-competition matches found; existing matches preserved."
         );
 
         return;
     }
 
     /*
-     * Normal sync:
-     * Save matches only for selected competitions.
-     * Replace the matches node so unselected/old matches disappear.
+     * 5. Save matches only after a selection has matches.
      */
-    newSettings.last_sync_status = "success";
+    updates.matches = selectedMatches;
 
-    await rootRef.update({
-        competitions: competitions,
-        competition_selection: selection,
-        matches: selectedMatches,
-        settings: newSettings
-    });
+    await rootRef.update(updates);
 
-    log("SYNC SUCCESS");
-    log("Competition count: " + Object.keys(competitions).length);
-    log("Saved matches: " + Object.keys(selectedMatches).length);
+    console.log(
+        "Sync complete. Competitions:",
+        Object.keys(newCatalog).length
+    );
+
+    console.log(
+        "Saved matches:",
+        Object.keys(selectedMatches).length
+    );
 }
 
 main().catch(async function (error) {
-    console.error("SYNC FAILED:", error);
+    console.error("SportsHub sync failed:", error);
 
     try {
-        if (admin.apps.length) {
-            const db = admin.database();
-            await db.ref("settings").update({
-                last_sync_status: "failed",
-                last_sync_error: String(
-                    error && error.message
-                        ? error.message
-                        : error
-                )
-            });
-        }
-    } catch (settingsError) {
+        await db.ref("settings").update({
+            last_sync_status: "failed",
+            last_sync_error: String(error.message || error),
+            last_sync_time: Date.now()
+        });
+    } catch (saveError) {
         console.error(
-            "Could not update sync error status:",
-            settingsError
+            "Could not save error status:",
+            saveError.message
         );
     }
 
