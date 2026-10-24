@@ -20,7 +20,9 @@ if (!admin.apps.length) {
     }
 
     admin.initializeApp({
-        credential: admin.credential.cert(JSON.parse(serviceAccountJson)),
+        credential: admin.credential.cert(
+            JSON.parse(serviceAccountJson)
+        ),
         databaseURL: databaseURL
     });
 }
@@ -29,17 +31,24 @@ const db = admin.database();
 const rootRef = db.ref("/");
 
 function number(value) {
+    if (value === null || value === undefined || value === "") {
+        return 0;
+    }
+
     const n = Number(value);
+
     return Number.isFinite(n) ? n : 0;
 }
 
 function id(value) {
-    return value === undefined || value === null
-        ? ""
-        : String(value).trim();
+    if (value === null || value === undefined) {
+        return "";
+    }
+
+    return String(value).trim();
 }
 
-function dateString(offset) {
+function getDateParts(offset) {
     const now = new Date();
 
     const parts = new Intl.DateTimeFormat("en-GB", {
@@ -49,66 +58,98 @@ function dateString(offset) {
         day: "2-digit"
     }).formatToParts(now);
 
-    const v = {};
-    parts.forEach(function (p) {
-        v[p.type] = p.value;
+    const values = {};
+
+    parts.forEach(function (part) {
+        values[part.type] = part.value;
     });
 
     const date = new Date(Date.UTC(
-        Number(v.year),
-        Number(v.month) - 1,
-        Number(v.day) + offset,
+        Number(values.year),
+        Number(values.month) - 1,
+        Number(values.day) + offset,
         12
     ));
 
-    const out = new Intl.DateTimeFormat("en-GB", {
+    const outputParts = new Intl.DateTimeFormat("en-GB", {
         timeZone: TIME_ZONE,
         year: "numeric",
         month: "2-digit",
         day: "2-digit"
     }).formatToParts(date);
 
-    const r = {};
-    out.forEach(function (p) {
-        r[p.type] = p.value;
+    const result = {};
+
+    outputParts.forEach(function (part) {
+        result[part.type] = part.value;
     });
 
-    return r.day + "/" + r.month + "/" + r.year;
+    return result;
+}
+
+function dateString(offset) {
+    const values = getDateParts(offset);
+
+    return values.day + "/" +
+        values.month + "/" +
+        values.year;
+}
+
+function isoDateString(offset) {
+    const values = getDateParts(offset);
+
+    return values.year + "-" +
+        values.month + "-" +
+        values.day;
 }
 
 function normalizeProviderName(value) {
-    const p = String(value || "")
+    const provider = String(value || "")
         .trim()
         .toLowerCase()
         .replace(/_/g, "-");
 
-    if (["365", "365scores", "365-scores"].indexOf(p) !== -1) {
+    if ([
+        "365",
+        "365scores",
+        "365-scores"
+    ].indexOf(provider) !== -1) {
         return "365scores";
     }
 
-    if (["api-football", "apifootball"].indexOf(p) !== -1) {
+    if ([
+        "api-football",
+        "apifootball",
+        "football"
+    ].indexOf(provider) !== -1) {
         return "api-football";
     }
 
-    return p;
+    return provider;
 }
 
 function getSelectedParser(settings) {
-    const parserName = String(settings.selected_parser || "");
+    const parserName = String(
+        settings.selected_parser || "parse1"
+    );
 
     const config =
-        settings.parse && settings.parse[parserName]
+        settings.parse &&
+        settings.parse[parserName]
             ? settings.parse[parserName]
             : {};
 
+    const provider = normalizeProviderName(
+        config.api_parser ||
+        settings.api_parser ||
+        settings.provider ||
+        process.env.API_PROVIDER ||
+        "365scores"
+    );
+
     return {
         parserName: parserName,
-        provider: normalizeProviderName(
-            config.api_parser ||
-            settings.api_parser ||
-            settings.provider ||
-            "365scores"
-        ),
+        provider: provider,
         config: config
     };
 }
@@ -133,13 +174,41 @@ function getSelectedSports(settings, parser) {
             : [];
     }
 
-    return value.map(function (item) {
-        return item && typeof item === "object"
-            ? number(item.id || item.sportId || item.sport_id)
-            : number(item);
-    }).filter(function (sportId, index, list) {
-        return sportId > 0 && list.indexOf(sportId) === index;
+    const result = [];
+
+    value.forEach(function (item) {
+        let sportId;
+
+        if (item && typeof item === "object") {
+            sportId = number(
+                item.id ||
+                item.sportId ||
+                item.sport_id
+            );
+        } else {
+            sportId = number(item);
+        }
+
+        if (
+            sportId > 0 &&
+            result.indexOf(sportId) === -1
+        ) {
+            result.push(sportId);
+        }
     });
+
+    /*
+     * API-Football is a football-only provider.
+     * Its sport ID in this app is 1.
+     */
+    if (
+        parser.provider === "api-football" &&
+        result.length === 0
+    ) {
+        return [];
+    }
+
+    return result;
 }
 
 function loadProvider(providerName) {
@@ -149,7 +218,9 @@ function loadProvider(providerName) {
     };
 
     if (!files[providerName]) {
-        throw new Error("Unsupported provider: " + providerName);
+        throw new Error(
+            "Unsupported provider: " + providerName
+        );
     }
 
     const provider = require(path.join(
@@ -160,7 +231,8 @@ function loadProvider(providerName) {
 
     if (typeof provider.fetchMatches !== "function") {
         throw new Error(
-            providerName + " must export fetchMatches(options)."
+            providerName +
+            " must export fetchMatches(options)."
         );
     }
 
@@ -196,18 +268,44 @@ function getCompetitionName(match) {
         match.league_name ||
         (match.competition && match.competition.name) ||
         (match.league && match.league.name) ||
-        (typeof match.league === "string" ? match.league : "") ||
+        (typeof match.league === "string"
+            ? match.league
+            : "") ||
         ""
     );
 }
 
+function getSportId(item) {
+    if (!item) {
+        return 0;
+    }
+
+    if (typeof item === "object") {
+        return number(
+            item.sportId ||
+            item.sport_id ||
+            item.id
+        );
+    }
+
+    return number(item);
+}
+
 function normalizeSport(item, providerName) {
-    const sportId = id(item.id || item.sportId || item.sport_id);
+    const sportId = id(
+        item.id ||
+        item.sportId ||
+        item.sport_id
+    );
 
     return {
         id: number(sportId),
         sportId: number(sportId),
-        name: String(item.name || item.sportName || ""),
+        name: String(
+            item.name ||
+            item.sportName ||
+            ""
+        ),
         nameForURL: String(item.nameForURL || ""),
         totalGames: number(item.totalGames),
         liveGames: number(item.liveGames),
@@ -227,12 +325,18 @@ function normalizeCompetition(item, providerName) {
     return {
         id: number(competitionId),
         competitionId: number(competitionId),
-        sportId: number(
+
+        sportId: getSportId(
             item.sportId ||
             item.sport_id ||
-            (typeof item.sport === "object" ? item.sport.id : item.sport)
+            item.sport
         ),
-        countryId: number(item.countryId || item.country_id),
+
+        countryId: number(
+            item.countryId ||
+            item.country_id
+        ),
+
         name: String(
             item.name ||
             item.competitionDisplayName ||
@@ -240,6 +344,7 @@ function normalizeCompetition(item, providerName) {
             item.league_name ||
             ""
         ),
+
         nameForURL: String(item.nameForURL || ""),
         hideOnCatalog: item.hideOnCatalog === true,
         hideOnSearch: item.hideOnSearch === true,
@@ -252,6 +357,24 @@ function normalizeCompetition(item, providerName) {
 
 function buildSportsCatalog(catalog, providerName) {
     const result = {};
+
+    /*
+     * API-Football provides fixtures, not a sports catalog
+     * through the fetchMatches-only module.
+     */
+    if (providerName === "api-football") {
+        result["1"] = {
+            id: 1,
+            sportId: 1,
+            name: "Football",
+            nameForURL: "football",
+            totalGames: 0,
+            liveGames: 0,
+            provider: providerName
+        };
+
+        return result;
+    }
 
     (catalog.sports || []).forEach(function (item) {
         const sport = normalizeSport(item, providerName);
@@ -278,18 +401,31 @@ function buildCompetitionCatalog(
     });
 
     function add(item) {
-        const competition = normalizeCompetition(item, providerName);
+        const competition = normalizeCompetition(
+            item,
+            providerName
+        );
+
         const competitionId = id(competition.id);
 
         if (!competitionId || competition.hideOnCatalog) {
             return;
         }
 
+        /*
+         * Do not discard a competition merely because a provider
+         * omits sportId. When present, sportId must match selection.
+         */
         if (
             selectedSports.length &&
+            competition.sportId > 0 &&
             !allowedSports[String(competition.sportId)]
         ) {
             return;
+        }
+
+        if (!competition.name) {
+            competition.name = "Competition " + competitionId;
         }
 
         result[competitionId] = competition;
@@ -306,7 +442,11 @@ function buildCompetitionCatalog(
 
         add({
             id: competitionId,
-            sportId: match.sportId || match.sport_id || match.sport,
+            sportId: getSportId(
+                match.sportId ||
+                match.sport_id ||
+                match.sport
+            ),
             countryId: match.countryId || match.country_id,
             name: getCompetitionName(match)
         });
@@ -319,8 +459,10 @@ function buildSelection(newCatalog, oldSelection) {
     const result = {};
 
     Object.keys(newCatalog).forEach(function (competitionId) {
-        result[competitionId] =
-            !!(oldSelection && oldSelection[competitionId] === true);
+        result[competitionId] = !!(
+            oldSelection &&
+            oldSelection[competitionId] === true
+        );
     });
 
     return result;
@@ -353,12 +495,15 @@ function filterSelectedMatches(
             return;
         }
 
-        const sportId = number(
-            match.sportId || match.sport_id || match.sport
+        const sportId = getSportId(
+            match.sportId ||
+            match.sport_id ||
+            match.sport
         );
 
         if (
             selectedSports.length &&
+            sportId > 0 &&
             !allowedSports[String(sportId)]
         ) {
             return;
@@ -378,25 +523,60 @@ function filterSelectedMatches(
     return result;
 }
 
-async function fetchMatchesForDates(provider, selectedSports) {
+async function fetchMatchesForDates(
+    provider,
+    selectedSports,
+    settings,
+    parser
+) {
     const result = [];
     const seen = {};
 
     for (let i = 0; i < FETCH_DATES.length; i++) {
-        const date = dateString(FETCH_DATES[i]);
+        const offset = FETCH_DATES[i];
+        let options;
 
-        const matches = await provider.fetchMatches({
-            sportIds: selectedSports,
-            startDate: date,
-            endDate: date,
-            timeZone: TIME_ZONE
-        });
+        if (parser.provider === "api-football") {
+            /*
+             * API-Football expects:
+             * options.date = YYYY-MM-DD
+             */
+            options = {
+                date: isoDateString(offset),
+                settings: settings,
+                parserSettings: parser.config,
+                sportIds: selectedSports,
+                timeZone: TIME_ZONE
+            };
+        } else {
+            /*
+             * 365Scores expects:
+             * startDate/endDate = DD/MM/YYYY
+             */
+            const date = dateString(offset);
 
-        if (!Array.isArray(matches)) {
-            throw new Error("fetchMatches() did not return an array.");
+            options = {
+                sportIds: selectedSports,
+                startDate: date,
+                endDate: date,
+                timeZone: TIME_ZONE
+            };
         }
 
-        console.log("Date:", date, "matches:", matches.length);
+        const matches = await provider.fetchMatches(options);
+
+        if (!Array.isArray(matches)) {
+            throw new Error(
+                "fetchMatches() did not return an array."
+            );
+        }
+
+        console.log(
+            "Date offset:",
+            offset,
+            "matches:",
+            matches.length
+        );
 
         matches.forEach(function (match) {
             const matchId = getMatchId(match);
@@ -413,6 +593,44 @@ async function fetchMatchesForDates(provider, selectedSports) {
     return result;
 }
 
+async function getProviderCatalog(provider, providerName) {
+    if (typeof provider.fetchCatalog === "function") {
+        const catalog = await provider.fetchCatalog({
+            timeZone: TIME_ZONE
+        });
+
+        if (!catalog || !Array.isArray(catalog.sports)) {
+            throw new Error(
+                "Provider returned an invalid sports catalog."
+            );
+        }
+
+        return {
+            sports: catalog.sports,
+            competitions: Array.isArray(catalog.competitions)
+                ? catalog.competitions
+                : []
+        };
+    }
+
+    if (providerName === "api-football") {
+        return {
+            sports: [
+                {
+                    id: 1,
+                    name: "Football",
+                    nameForURL: "football"
+                }
+            ],
+            competitions: []
+        };
+    }
+
+    throw new Error(
+        "Provider must export fetchCatalog()."
+    );
+}
+
 async function main() {
     const snapshot = await rootRef.once("value");
     const root = snapshot.val() || {};
@@ -420,48 +638,45 @@ async function main() {
 
     const parser = getSelectedParser(settings);
     const provider = loadProvider(parser.provider);
-    const selectedSports = getSelectedSports(settings, parser);
+
+    const selectedSports = getSelectedSports(
+        settings,
+        parser
+    );
 
     const oldProvider = normalizeProviderName(
         settings.last_synced_api_provider || ""
     );
 
-    const providerChanged = oldProvider !== parser.provider;
+    const providerChanged =
+        oldProvider !== parser.provider;
 
     console.log("Provider:", parser.provider);
     console.log("Selected parser:", parser.parserName);
     console.log("Selected sports:", selectedSports);
+    console.log("Previous provider:", oldProvider || "(none)");
     console.log("Provider changed:", providerChanged);
 
-    if (typeof provider.fetchCatalog !== "function") {
-        throw new Error(
-            "Provider must export fetchCatalog() to load sports."
-        );
-    }
+    const catalog = await getProviderCatalog(
+        provider,
+        parser.provider
+    );
 
-    const catalog = await provider.fetchCatalog({
-        sportIds: selectedSports,
-        timeZone: TIME_ZONE
-    });
-
-    if (!catalog || !Array.isArray(catalog.sports)) {
-        throw new Error(
-            "Provider returned no valid sports catalog. Firebase data preserved."
-        );
-    }
-
-    const sportsCatalog = buildSportsCatalog(catalog, parser.provider);
+    const sportsCatalog = buildSportsCatalog(
+        catalog,
+        parser.provider
+    );
 
     if (Object.keys(sportsCatalog).length === 0) {
         throw new Error(
-            "No sports were returned. Existing Firebase data preserved."
+            "No sports returned. Firebase data preserved."
         );
     }
 
     /*
      * STAGE 1:
-     * API changed -> save only the new API's sports.
-     * Do not fetch or save matches in this stage.
+     * A provider change resets provider-specific data.
+     * Only the new provider's sports catalog is saved.
      */
     if (providerChanged) {
         await rootRef.update({
@@ -469,46 +684,65 @@ async function main() {
             competitions: {},
             competition_selection: {},
             matches: {},
-            "settings/last_synced_api_provider": parser.provider,
-            "settings/last_sync_status": "success",
+
+            "settings/last_synced_api_provider":
+                parser.provider,
+
+            "settings/last_sync_status":
+                "waiting_for_sports",
+
             "settings/last_sync_error": null,
             "settings/last_sync_time": Date.now()
         });
 
-        console.log("STAGE 1 complete: sports saved only.");
-        console.log("Select sports in Admin, then run sync again.");
+        console.log(
+            "STAGE 1 complete: new provider sports saved."
+        );
+
+        console.log(
+            "Choose sports in Admin, then run sync again."
+        );
+
         return;
     }
 
     /*
-     * A sports selection is required before loading competitions.
+     * Save current provider's sports catalog.
+     */
+    await rootRef.child("sports").set(sportsCatalog);
+
+    /*
+     * Wait until Admin has selected sports.
      */
     if (selectedSports.length === 0) {
-        await rootRef.update({
-            sports: sportsCatalog,
-            "settings/last_sync_status": "waiting_for_sports",
-            "settings/last_sync_error": null,
-            "settings/last_sync_time": Date.now()
+        await rootRef.child("settings").update({
+            last_sync_status: "waiting_for_sports",
+            last_sync_error: null,
+            last_sync_time: Date.now()
         });
 
-        console.log("No sports selected. Waiting for Admin selection.");
+        console.log(
+            "No sports selected. Waiting for Admin selection."
+        );
+
         return;
     }
 
     /*
      * STAGE 2:
-     * Load competitions for selected sports.
-     * Some providers (including some 365Scores responses) do not
-     * return a competition catalog, so derive it from game data.
-     * The fetched games are used only to discover competitions here.
+     * Discover competitions for selected sports.
      */
     let discoveryMatches = [];
 
-    if (!Array.isArray(catalog.competitions) ||
-        catalog.competitions.length === 0) {
+    if (
+        !Array.isArray(catalog.competitions) ||
+        catalog.competitions.length === 0
+    ) {
         discoveryMatches = await fetchMatchesForDates(
             provider,
-            selectedSports
+            selectedSports,
+            settings,
+            parser
         );
     }
 
@@ -520,30 +754,43 @@ async function main() {
     );
 
     if (Object.keys(newCatalog).length === 0) {
+        await rootRef.child("settings").update({
+            last_sync_status: "waiting_for_competitions",
+            last_sync_error:
+                "No competitions found for selected sports.",
+            last_sync_time: Date.now()
+        });
+
         throw new Error(
-            "No competitions found for selected sports. Existing data preserved."
+            "No competitions found for selected sports."
         );
     }
 
     const oldSelection = root.competition_selection || {};
-    const selection = buildSelection(newCatalog, oldSelection);
+
+    const selection = buildSelection(
+        newCatalog,
+        oldSelection
+    );
 
     /*
-     * Replace the catalog, not merge it with another API's old catalog.
-     * Remove selections belonging to competitions no longer in this catalog.
+     * Replace catalogs so stale competitions from the previous
+     * catalog are not retained.
      */
     await rootRef.update({
-        sports: sportsCatalog,
         competitions: newCatalog,
         competition_selection: selection,
-        "settings/last_synced_api_provider": parser.provider,
+
+        "settings/last_synced_api_provider":
+            parser.provider,
+
         "settings/last_sync_status": "success",
         "settings/last_sync_error": null,
         "settings/last_sync_time": Date.now()
     });
 
     console.log(
-        "STAGE 2: competitions saved:",
+        "Competitions saved:",
         Object.keys(newCatalog).length
     );
 
@@ -554,21 +801,38 @@ async function main() {
     );
 
     /*
-     * No competition selected yet: stop without saving matches.
+     * No competitions selected:
+     * do not leave matches from old/unselected competitions.
      */
     if (selectedCompetitionIds.length === 0) {
-        console.log("No competitions selected.");
-        console.log("Select competitions in Admin, then run sync again.");
+        await rootRef.child("matches").set({});
+
+        await rootRef.child("settings").update({
+            last_sync_status: "waiting_for_competitions",
+            last_sync_error: null,
+            last_sync_time: Date.now()
+        });
+
+        console.log(
+            "No competitions selected. Matches cleared."
+        );
+
+        console.log(
+            "Choose competitions in Admin, then run sync again."
+        );
+
         return;
     }
 
     /*
      * STAGE 3:
-     * Fetch games and save only games belonging to selected competitions.
+     * Fetch fixtures and keep selected competitions only.
      */
     const allMatches = await fetchMatchesForDates(
         provider,
-        selectedSports
+        selectedSports,
+        settings,
+        parser
     );
 
     const selectedMatches = filterSelectedMatches(
@@ -578,28 +842,20 @@ async function main() {
         parser.provider
     );
 
-    if (Object.keys(selectedMatches).length === 0) {
-        console.log(
-            "No matches found for selected competitions. Existing matches preserved."
-        );
-
-        await rootRef.child("settings").update({
-            last_sync_status: "no_selected_matches",
-            last_sync_error: null,
-            last_sync_time: Date.now()
-        });
-
-        return;
-    }
-
     /*
-     * Replace the matches collection with selected-competition matches only.
+     * Replace the collection even when there are no fixtures.
+     * This prevents stale matches from unselected competitions.
      */
-    await rootRef.update({
-        matches: selectedMatches,
-        "settings/last_sync_status": "success",
-        "settings/last_sync_error": null,
-        "settings/last_sync_time": Date.now()
+    await rootRef.child("matches").set(selectedMatches);
+
+    await rootRef.child("settings").update({
+        last_sync_status:
+            Object.keys(selectedMatches).length > 0
+                ? "success"
+                : "no_selected_matches",
+
+        last_sync_error: null,
+        last_sync_time: Date.now()
     });
 
     console.log(
@@ -614,7 +870,9 @@ main().catch(async function (error) {
     try {
         await db.ref("settings").update({
             last_sync_status: "failed",
-            last_sync_error: String(error.message || error),
+            last_sync_error: String(
+                error.message || error
+            ),
             last_sync_time: Date.now()
         });
     } catch (saveError) {
