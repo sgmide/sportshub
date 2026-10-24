@@ -36,6 +36,7 @@ function dateParts(date) {
     }).formatToParts(date);
 
     const result = {};
+
     parts.forEach(function (part) {
         result[part.type] = part.value;
     });
@@ -45,6 +46,7 @@ function dateParts(date) {
 
 function getDate(offset) {
     const current = dateParts(new Date());
+
     const date = new Date(Date.UTC(
         Number(current.year),
         Number(current.month) - 1,
@@ -143,7 +145,10 @@ function getSelectedSports(settings) {
             typeof item === "string"
         ) {
             const id = toId(item);
-            if (id && id !== "0") result.push(id);
+
+            if (id && id !== "0") {
+                result.push(id);
+            }
         }
     });
 
@@ -178,6 +183,7 @@ function getCompetitionId(match) {
 function getCompetitionName(match) {
     return toText(
         match.competitionName ||
+        match.competitionDisplayName ||
         match.league ||
         match.competition ||
         match.leagueName ||
@@ -192,7 +198,9 @@ function getSportId(match) {
 function normalizeDate(value) {
     const text = toText(value);
 
-    if (/^\d{2}-\d{2}-\d{4}$/.test(text)) return text;
+    if (/^\d{2}-\d{2}-\d{4}$/.test(text)) {
+        return text;
+    }
 
     const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
 
@@ -229,7 +237,7 @@ function normalizeGoalEvents(value) {
 
 /*
  * Firebase match whitelist:
- * Exactly the existing 20 fields are written.
+ * Only the existing match fields are written.
  */
 function normalizeMatch(raw, oldMatch) {
     const match = raw || {};
@@ -346,6 +354,7 @@ function normalizeCompetition(raw, oldCompetition, selection) {
         name: toText(
             raw.name ||
             raw.competitionName ||
+            raw.competitionDisplayName ||
             raw.league ||
             id
         ),
@@ -363,22 +372,31 @@ function normalizeCatalog(catalog) {
         : [];
 
     list.forEach(function (item) {
-        const id = toId(item.id || item.competitionId || item.leagueId);
+        const id = toId(
+            item.id ||
+            item.competitionId ||
+            item.leagueId
+        );
+
         if (!id) return;
 
         competitions[id] = item;
     });
 
     /*
-     * Do not replace the Firebase sports node with API catalog data.
-     * Its existing 7-field schema and IDs must remain unchanged.
+     * Preserve the existing Firebase sports node.
      */
     return {
         competitions: competitions
     };
 }
 
-async function fetchMatches(provider, providerName, parserSettings, sports) {
+async function fetchMatches(
+    provider,
+    providerName,
+    parserSettings,
+    sports
+) {
     const allMatches = {};
     const errors = [];
 
@@ -416,12 +434,18 @@ async function fetchMatches(provider, providerName, parserSettings, sports) {
             }
 
             if (!Array.isArray(result)) {
-                fail(providerName + " fetchMatches() must return an array.");
+                fail(
+                    providerName +
+                    " fetchMatches() must return an array."
+                );
             }
 
             result.forEach(function (raw) {
                 const match = normalizeMatch(raw, null);
-                if (match) allMatches[toId(match.gameId)] = raw;
+
+                if (match) {
+                    allMatches[toId(match.gameId)] = raw;
+                }
             });
 
             console.log(
@@ -430,6 +454,7 @@ async function fetchMatches(provider, providerName, parserSettings, sports) {
             );
         } catch (error) {
             errors.push(date.iso + ": " + error.message);
+
             console.error(
                 providerName + " failed for " + date.iso + ":",
                 error.message
@@ -442,6 +467,67 @@ async function fetchMatches(provider, providerName, parserSettings, sports) {
     }
 
     return Object.values(allMatches);
+}
+
+/*
+ * Diagnostic:
+ * Count fetched matches for every competition across all three dates.
+ * This only prints logs; it does not change Firebase data.
+ */
+function logCompetitionMatchCounts(fetchedMatches, newSelection) {
+    const matchCountByCompetition = {};
+
+    fetchedMatches.forEach(function (match) {
+        const id = getCompetitionId(match);
+
+        if (!id) return;
+
+        const name = getCompetitionName(match);
+        const key = String(id);
+
+        if (!matchCountByCompetition[key]) {
+            matchCountByCompetition[key] = {
+                name: name,
+                total: 0,
+                selected: newSelection[key] === true
+            };
+        }
+
+        matchCountByCompetition[key].total++;
+    });
+
+    console.log("");
+    console.log("========== MATCH COUNT BY COMPETITION ==========");
+
+    const ids = Object.keys(matchCountByCompetition).sort(
+        function (a, b) {
+            return (
+                matchCountByCompetition[b].total -
+                matchCountByCompetition[a].total
+            );
+        }
+    );
+
+    ids.forEach(function (id) {
+        const item = matchCountByCompetition[id];
+
+        console.log(
+            item.name +
+            " | ID: " + id +
+            " | Matches: " + item.total +
+            " | Selected: " + (item.selected ? "YES" : "NO")
+        );
+    });
+
+    console.log("Competitions with fetched matches:", ids.length);
+    console.log(
+        "Total counted matches:",
+        ids.reduce(function (sum, id) {
+            return sum + matchCountByCompetition[id].total;
+        }, 0)
+    );
+    console.log("================================================");
+    console.log("");
 }
 
 async function main() {
@@ -482,6 +568,7 @@ async function main() {
     const provider = loadProvider(providerName);
 
     const previousProvider = getPreviousProvider(settings);
+
     const providerChanged =
         previousProvider !== "" &&
         previousProvider !== providerName;
@@ -490,12 +577,15 @@ async function main() {
 
     console.log("Selected parser:", selected.parserKey);
     console.log("Selected provider:", providerName);
-    console.log("Previous provider:", previousProvider || "not recorded");
+    console.log(
+        "Previous provider:",
+        previousProvider || "not recorded"
+    );
     console.log("Provider changed:", providerChanged);
     console.log("Selected sports:", selectedSports);
 
     /*
-     * Fetch first. Nothing is deleted before successful API retrieval.
+     * Fetch catalog first. No Firebase data is deleted here.
      */
     let catalog = { competitions: {} };
 
@@ -522,7 +612,9 @@ async function main() {
     );
 
     if (fetchedMatches.length === 0) {
-        fail("No matches returned. Existing Firebase data was not replaced.");
+        fail(
+            "No matches returned. Existing Firebase data was not replaced."
+        );
     }
 
     const competitionRaw = Object.assign(
@@ -532,6 +624,7 @@ async function main() {
 
     fetchedMatches.forEach(function (raw) {
         const id = getCompetitionId(raw);
+
         if (id && !competitionRaw[id]) {
             competitionRaw[id] = {
                 id: id,
@@ -553,28 +646,32 @@ async function main() {
 
         if (!competition) return;
 
-        /*
-         * New competitions from a changed provider start unselected.
-         * Existing selection flags remain unchanged for matching IDs.
-         */
         newCompetitions[id] = competition;
         newSelection[id] = competition.selected;
     });
 
     if (Object.keys(newCompetitions).length === 0) {
-        fail("No competitions discovered. Existing data was not replaced.");
+        fail(
+            "No competitions discovered. Existing data was not replaced."
+        );
     }
+
+    /*
+     * NEW DIAGNOSTIC:
+     * Prints match counts per competition in GitHub Actions logs.
+     */
+    logCompetitionMatchCounts(fetchedMatches, newSelection);
 
     const finalMatches = {};
 
     /*
-     * Same provider: retain older matches and stream URLs.
-     * Changed provider: don't carry old matches or their stream URLs over.
-     * Every retained match is sanitized to the exact 20-field schema.
+     * Same provider: retain existing matches and their stream URLs.
+     * Changed provider: don't carry old matches across.
      */
     if (!providerChanged) {
         Object.keys(oldMatches).forEach(function (id) {
             const cleaned = normalizeMatch(oldMatches[id], null);
+
             if (cleaned) {
                 finalMatches[toId(cleaned.gameId || id)] = cleaned;
             }
@@ -585,12 +682,16 @@ async function main() {
 
     fetchedMatches.forEach(function (raw) {
         const id = toId(
-            raw.gameId || raw.apiFixtureId || raw.fixtureId || raw.id
+            raw.gameId ||
+            raw.apiFixtureId ||
+            raw.fixtureId ||
+            raw.id
         );
 
         if (!id) return;
 
         const competitionId = getCompetitionId(raw);
+
         if (!competitionId) return;
 
         const isSelected = newSelection[competitionId] === true;
@@ -599,7 +700,9 @@ async function main() {
 
         if (
             selectedSports.length > 0 &&
-            !selectedSports.includes(getSportId(raw).toString())
+            !selectedSports.includes(
+                getSportId(raw).toString()
+            )
         ) {
             return;
         }
@@ -614,8 +717,7 @@ async function main() {
     });
 
     /*
-     * Only existing Firebase nodes/fields are updated.
-     * No new settings keys and no provider metadata are written.
+     * Preserve the existing Firebase schema and sports node.
      */
     const updates = {
         sports: oldSports,
@@ -629,13 +731,22 @@ async function main() {
 
     await rootRef.update(updates);
 
+    console.log("");
+    console.log("========== SYNC SUMMARY ==========");
     console.log("Provider:", providerName);
-    console.log("Competitions:", Object.keys(newCompetitions).length);
+    console.log(
+        "Competitions:",
+        Object.keys(newCompetitions).length
+    );
     console.log("Matches fetched:", fetchedMatches.length);
     console.log("Selected matches:", selectedMatchCount);
-    console.log("Total matches stored:", Object.keys(finalMatches).length);
+    console.log(
+        "Total matches stored:",
+        Object.keys(finalMatches).length
+    );
     console.log("Sports node preserved:", true);
     console.log("Sports Hub sync completed.");
+    console.log("==================================");
 }
 
 main()
