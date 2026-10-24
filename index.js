@@ -236,8 +236,7 @@ function normalizeGoalEvents(value) {
 }
 
 /*
- * Firebase match whitelist:
- * Only the existing match fields are written.
+ * Keep the existing Firebase match fields.
  */
 function normalizeMatch(raw, oldMatch) {
     const match = raw || {};
@@ -328,7 +327,7 @@ function normalizeMatch(raw, oldMatch) {
 }
 
 /*
- * Keep only the existing four competition fields.
+ * Keep the existing four competition fields.
  */
 function normalizeCompetition(raw, oldCompetition, selection) {
     const id = toId(
@@ -383,14 +382,16 @@ function normalizeCatalog(catalog) {
         competitions[id] = item;
     });
 
-    /*
-     * Preserve the existing Firebase sports node.
-     */
+    // Preserve the existing Firebase sports node.
     return {
         competitions: competitions
     };
 }
 
+/*
+ * Fetch matches for yesterday, today and tomorrow.
+ * Deduplicate by game ID.
+ */
 async function fetchMatches(
     provider,
     providerName,
@@ -462,17 +463,29 @@ async function fetchMatches(
         }
     }
 
+    /*
+     * Do not replace existing data if all requests fail.
+     */
     if (Object.keys(allMatches).length === 0 && errors.length > 0) {
         fail("No matches fetched. " + errors.join(" | "));
+    }
+
+    /*
+     * Avoid publishing partial counts when any date failed.
+     * This prevents incomplete data from replacing the previous counts.
+     */
+    if (errors.length > 0) {
+        fail(
+            "One or more date requests failed. Counts were not updated. " +
+            errors.join(" | ")
+        );
     }
 
     return Object.values(allMatches);
 }
 
 /*
- * Diagnostic:
- * Count fetched matches for every competition across all three dates.
- * This only prints logs; it does not change Firebase data.
+ * Print fetched match counts by competition.
  */
 function logCompetitionMatchCounts(fetchedMatches, newSelection) {
     const matchCountByCompetition = {};
@@ -482,12 +495,11 @@ function logCompetitionMatchCounts(fetchedMatches, newSelection) {
 
         if (!id) return;
 
-        const name = getCompetitionName(match);
         const key = String(id);
 
         if (!matchCountByCompetition[key]) {
             matchCountByCompetition[key] = {
-                name: name,
+                name: getCompetitionName(match),
                 total: 0,
                 selected: newSelection[key] === true
             };
@@ -528,6 +540,38 @@ function logCompetitionMatchCounts(fetchedMatches, newSelection) {
     );
     console.log("================================================");
     console.log("");
+}
+
+/*
+ * Create competition_counts from the active provider's
+ * successfully fetched and deduplicated matches.
+ *
+ * This counts all fetched competitions, not just selected ones.
+ */
+function buildCompetitionCounts(fetchedMatches) {
+    const counts = {};
+
+    fetchedMatches.forEach(function (match) {
+        const id = getCompetitionId(match);
+
+        if (!id) return;
+
+        const key = String(id);
+
+        if (!counts[key]) {
+            counts[key] = {
+                competitionId: /^\d+$/.test(key)
+                    ? Number(key)
+                    : key,
+                name: getCompetitionName(match),
+                matchCount: 0
+            };
+        }
+
+        counts[key].matchCount++;
+    });
+
+    return counts;
 }
 
 async function main() {
@@ -585,7 +629,7 @@ async function main() {
     console.log("Selected sports:", selectedSports);
 
     /*
-     * Fetch catalog first. No Firebase data is deleted here.
+     * Fetch the competition catalog.
      */
     let catalog = { competitions: {} };
 
@@ -600,6 +644,10 @@ async function main() {
 
             catalog = normalizeCatalog(rawCatalog);
         } catch (error) {
+            /*
+             * A failed catalog request does not abort match fetching.
+             * Competitions can still be discovered from fetched matches.
+             */
             console.warn("Catalog fetch failed:", error.message);
         }
     }
@@ -617,6 +665,10 @@ async function main() {
         );
     }
 
+    /*
+     * Build competition catalog from both the API catalog
+     * and competitions found in the fetched matches.
+     */
     const competitionRaw = Object.assign(
         {},
         catalog.competitions
@@ -657,16 +709,30 @@ async function main() {
     }
 
     /*
-     * NEW DIAGNOSTIC:
-     * Prints match counts per competition in GitHub Actions logs.
+     * Count all fetched matches by competition.
+     * The count does not depend on selection checkboxes.
      */
     logCompetitionMatchCounts(fetchedMatches, newSelection);
+
+    const competitionCounts =
+        buildCompetitionCounts(fetchedMatches);
+
+    if (Object.keys(competitionCounts).length === 0) {
+        fail(
+            "No competition counts generated. Existing counts were preserved."
+        );
+    }
+
+    console.log(
+        "Competition counts generated:",
+        Object.keys(competitionCounts).length
+    );
 
     const finalMatches = {};
 
     /*
      * Same provider: retain existing matches and their stream URLs.
-     * Changed provider: don't carry old matches across.
+     * Changed provider: do not carry old matches across.
      */
     if (!providerChanged) {
         Object.keys(oldMatches).forEach(function (id) {
@@ -717,12 +783,18 @@ async function main() {
     });
 
     /*
-     * Preserve the existing Firebase schema and sports node.
+     * Replace competition_counts atomically with this sync's
+     * newly generated counts. Old competition IDs not present
+     * in the new object are removed by Firebase update semantics
+     * for this top-level child.
+     *
+     * Existing sports node and match schema are preserved.
      */
     const updates = {
         sports: oldSports,
         competitions: newCompetitions,
         competition_selection: newSelection,
+        competition_counts: competitionCounts,
         matches: finalMatches,
         "settings/last_api": toText(
             parserSettings.api_url || settings.last_api
@@ -739,6 +811,10 @@ async function main() {
         Object.keys(newCompetitions).length
     );
     console.log("Matches fetched:", fetchedMatches.length);
+    console.log(
+        "Competition counts:",
+        Object.keys(competitionCounts).length
+    );
     console.log("Selected matches:", selectedMatchCount);
     console.log(
         "Total matches stored:",
