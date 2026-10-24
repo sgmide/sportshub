@@ -21,10 +21,13 @@ function toText(value) {
     return String(value).trim();
 }
 
-function getDate(offset) {
-    const date = new Date();
-    date.setUTCDate(date.getUTCDate() + offset);
+function toNumber(value) {
+    if (value === null || value === undefined || value === "") return 0;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+}
 
+function dateParts(date) {
     const parts = new Intl.DateTimeFormat("en-CA", {
         timeZone: TIME_ZONE,
         year: "numeric",
@@ -32,14 +35,29 @@ function getDate(offset) {
         day: "2-digit"
     }).formatToParts(date);
 
-    const values = {};
+    const result = {};
     parts.forEach(function (part) {
-        values[part.type] = part.value;
+        result[part.type] = part.value;
     });
 
+    return result;
+}
+
+function getDate(offset) {
+    const current = dateParts(new Date());
+    const date = new Date(Date.UTC(
+        Number(current.year),
+        Number(current.month) - 1,
+        Number(current.day) + offset
+    ));
+
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(date.getUTCDate()).padStart(2, "0");
+
     return {
-        iso: values.year + "-" + values.month + "-" + values.day,
-        display: values.day + "-" + values.month + "-" + values.year
+        iso: year + "-" + month + "-" + day,
+        display: day + "-" + month + "-" + year
     };
 }
 
@@ -72,25 +90,41 @@ function getProvider(settings) {
         fail("Selected parser not found: " + parserKey);
     }
 
-    const provider = normalizeProvider(parser.api_parser);
+    const name = normalizeProvider(parser.api_parser);
 
-    if (!["365scores", "king", "api-football"].includes(provider)) {
-        fail("Unsupported API provider: " + provider);
+    if (!["365scores", "king", "api-football"].includes(name)) {
+        fail("Unsupported API provider: " + name);
     }
 
     return {
-        name: provider,
+        name: name,
         parserKey: parserKey,
         parserSettings: parser
     };
 }
 
+function getPreviousProvider(settings) {
+    const previousUrl = toText(settings.last_api);
+
+    if (!previousUrl || !settings.parse) return "";
+
+    const keys = Object.keys(settings.parse);
+
+    for (let i = 0; i < keys.length; i++) {
+        const parser = settings.parse[keys[i]] || {};
+
+        if (toText(parser.api_url) === previousUrl) {
+            return normalizeProvider(parser.api_parser);
+        }
+    }
+
+    return "";
+}
+
 function getSelectedSports(settings) {
     const value = settings.selected_sports;
 
-    if (!Array.isArray(value)) {
-        return [];
-    }
+    if (!Array.isArray(value)) return [];
 
     const result = [];
 
@@ -117,20 +151,19 @@ function getSelectedSports(settings) {
 }
 
 function loadProvider(providerName) {
-    const fileNames = {
+    const files = {
         "365scores": "365scores.js",
         "king": "king.js",
         "api-football": "api-football.js"
     };
 
-    const fileName = fileNames[providerName];
+    const fileName = files[providerName];
 
     if (!fileName) {
         fail("No module configured for provider: " + providerName);
     }
 
-    const modulePath = path.join(__dirname, "apis", fileName);
-    return require(modulePath);
+    return require(path.join(__dirname, "apis", fileName));
 }
 
 function getCompetitionId(match) {
@@ -153,11 +186,53 @@ function getCompetitionName(match) {
 }
 
 function getSportId(match) {
-    return toId(match.sportId || match.sport_id || "1");
+    return toNumber(match.sportId || match.sport_id || 1);
 }
 
-function normalizeMatch(raw, providerName, oldMatch) {
-    const match = Object.assign({}, raw || {});
+function normalizeDate(value) {
+    const text = toText(value);
+
+    if (/^\d{2}-\d{2}-\d{4}$/.test(text)) return text;
+
+    const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+    if (iso) {
+        return iso[3] + "-" + iso[2] + "-" + iso[1];
+    }
+
+    return text;
+}
+
+function normalizeGoalEvents(value) {
+    let events = [];
+
+    if (Array.isArray(value)) {
+        events = value;
+    } else if (value && typeof value === "object") {
+        events = Object.keys(value).map(function (key) {
+            return value[key];
+        });
+    }
+
+    return events.map(function (event) {
+        event = event || {};
+
+        return {
+            competitorId: toNumber(event.competitorId),
+            gameTime: toText(event.gameTime),
+            playerId: toNumber(event.playerId),
+            playerName: toText(event.playerName),
+            type: toText(event.type)
+        };
+    });
+}
+
+/*
+ * Firebase match whitelist:
+ * Exactly the existing 20 fields are written.
+ */
+function normalizeMatch(raw, oldMatch) {
+    const match = raw || {};
 
     const gameId = toId(
         match.gameId ||
@@ -184,150 +259,121 @@ function normalizeMatch(raw, providerName, oldMatch) {
 
     const homeScore = match.homeScore !== undefined
         ? match.homeScore
-        : (match.goals && match.goals.home);
+        : (match.goals ? match.goals.home : undefined);
 
     const awayScore = match.awayScore !== undefined
         ? match.awayScore
-        : (match.goals && match.goals.away);
+        : (match.goals ? match.goals.away : undefined);
 
     let score = toText(match.score);
 
-    if (!score && homeScore !== null && homeScore !== undefined &&
-        awayScore !== null && awayScore !== undefined) {
+    if (
+        !score &&
+        homeScore !== undefined &&
+        homeScore !== null &&
+        awayScore !== undefined &&
+        awayScore !== null
+    ) {
         score = homeScore + " - " + awayScore;
     }
 
-    const competitionId = getCompetitionId(match);
-    const competitionName = getCompetitionName(match);
+    if (!score) score = "VS";
 
-    const normalized = Object.assign({}, match, {
-        gameId: gameId,
-        apiFixtureId: toId(match.apiFixtureId || gameId),
-        apiProvider: providerName,
+    const newStreamUrl = toText(match.streamUrl);
+    const oldStreamUrl = oldMatch
+        ? toText(oldMatch.streamUrl)
+        : "";
 
-        home: home,
+    return {
         away: away,
-
-        homeCompetitorId: toId(
-            match.homeCompetitorId ||
-            match.homeTeamId ||
-            match.homeId
-        ),
-        awayCompetitorId: toId(
+        awayCompetitorId: toNumber(
             match.awayCompetitorId ||
             match.awayTeamId ||
             match.awayId
         ),
-
-        homeLogo: toText(match.homeLogo || match.homeTeamLogo),
         awayLogo: toText(match.awayLogo || match.awayTeamLogo),
-
-        competitionId: competitionId,
-        league: competitionName,
-        sportId: getSportId(match),
-
-        score: score,
-        homeScore: homeScore === undefined ? null : homeScore,
-        awayScore: awayScore === undefined ? null : awayScore,
-
-        date: toText(match.date),
-        time: toText(match.time),
-        matchTimeMillis: Number(
-            match.matchTimeMillis || match.timestamp || 0
+        competitionId: toNumber(getCompetitionId(match)),
+        date: normalizeDate(match.date),
+        gameId: /^\d+$/.test(gameId) ? Number(gameId) : gameId,
+        goalEvents: normalizeGoalEvents(match.goalEvents),
+        home: home,
+        homeCompetitorId: toNumber(
+            match.homeCompetitorId ||
+            match.homeTeamId ||
+            match.homeId
         ),
-
-        status: toText(match.status || match.shortStatus || "NS"),
-        shortStatus: toText(match.shortStatus || match.status || "NS"),
-
+        homeLogo: toText(match.homeLogo || match.homeTeamLogo),
+        league: getCompetitionName(match),
+        matchTimeMillis: toNumber(
+            match.matchTimeMillis || match.timestamp
+        ),
+        score: score,
+        shortStatus: toText(
+            match.shortStatus || match.status || "NS"
+        ),
+        sportId: getSportId(match),
         stadium: toText(match.stadium || match.venue),
-        goalEvents: match.goalEvents || {}
-    });
-
-    /*
-     * Same provider: preserve the admin's stream URL when the
-     * API response doesn't provide a replacement.
-     *
-     * Provider changed: oldMatch is not passed, so the previous
-     * provider's stream URL cannot leak into the new provider.
-     */
-    if (oldMatch) {
-        const oldStreamUrl = toText(oldMatch.streamUrl);
-        const newStreamUrl = toText(match.streamUrl);
-
-        normalized.streamUrl = newStreamUrl || oldStreamUrl;
-    } else {
-        normalized.streamUrl = toText(match.streamUrl);
-    }
-
-    return normalized;
-}
-
-function normalizeCompetition(raw, providerName) {
-    const id = toId(raw.id || raw.competitionId || raw.leagueId);
-    if (!id) return null;
-
-    return {
-        id: id,
-        name: toText(raw.name || raw.competitionName || raw.league || id),
-        selected: raw.selected === true,
-        sportId: toText(raw.sportId || raw.sport_id || "1"),
-        apiProvider: providerName
+        status: toText(match.status || match.shortStatus || "NS"),
+        streamUrl: newStreamUrl || oldStreamUrl,
+        time: toText(match.time)
     };
 }
 
-function buildCompetitionMap(matches, existingCompetitions, providerName) {
-    const map = {};
+/*
+ * Keep only the existing four competition fields.
+ */
+function normalizeCompetition(raw, oldCompetition, selection) {
+    const id = toId(
+        raw.id || raw.competitionId || raw.leagueId
+    );
 
-    (existingCompetitions || []).forEach(function (item) {
-        if (item && item.id !== undefined) {
-            const competition = normalizeCompetition(item, providerName);
-            if (competition) map[competition.id] = competition;
-        }
-    });
+    if (!id) return null;
 
-    matches.forEach(function (match) {
-        const id = getCompetitionId(match);
-        if (!id) return;
+    let selected = false;
 
-        if (!map[id]) {
-            map[id] = {
-                id: id,
-                name: getCompetitionName(match),
-                selected: false,
-                sportId: getSportId(match),
-                apiProvider: providerName
-            };
-        }
-    });
-
-    return map;
-}
-
-function normalizeCatalog(catalog, providerName) {
-    const sports = {};
-    const competitions = {};
-
-    (catalog && Array.isArray(catalog.sports) ? catalog.sports : [])
-        .forEach(function (sport) {
-            const id = toId(sport.id || sport.sportId);
-            if (!id) return;
-
-            sports[id] = Object.assign({}, sport, {
-                id: id,
-                name: toText(sport.name || id),
-                apiProvider: providerName
-            });
-        });
-
-    (catalog && Array.isArray(catalog.competitions)
-        ? catalog.competitions : [])
-        .forEach(function (raw) {
-            const competition = normalizeCompetition(raw, providerName);
-            if (competition) competitions[competition.id] = competition;
-        });
+    if (selection[id] === true) {
+        selected = true;
+    } else if (
+        selection[id] === undefined &&
+        oldCompetition &&
+        oldCompetition.selected === true
+    ) {
+        selected = true;
+    }
 
     return {
-        sports: sports,
+        id: /^\d+$/.test(id) ? Number(id) : id,
+        name: toText(
+            raw.name ||
+            raw.competitionName ||
+            raw.league ||
+            id
+        ),
+        selected: selected,
+        sportId: toNumber(raw.sportId || raw.sport_id || 1)
+    };
+}
+
+function normalizeCatalog(catalog) {
+    const competitions = {};
+
+    const list = catalog &&
+        Array.isArray(catalog.competitions)
+        ? catalog.competitions
+        : [];
+
+    list.forEach(function (item) {
+        const id = toId(item.id || item.competitionId || item.leagueId);
+        if (!id) return;
+
+        competitions[id] = item;
+    });
+
+    /*
+     * Do not replace the Firebase sports node with API catalog data.
+     * Its existing 7-field schema and IDs must remain unchanged.
+     */
+    return {
         competitions: competitions
     };
 }
@@ -362,22 +408,20 @@ async function fetchMatches(provider, providerName, parserSettings, sports) {
             } else {
                 result = await provider.fetchMatches({
                     sportIds: sports,
-                    startDate: date.display,
-                    endDate: date.display,
+                    startDate: date.display.replace(/-/g, "/"),
+                    endDate: date.display.replace(/-/g, "/"),
                     parserSettings: parserSettings,
                     timeZone: TIME_ZONE
                 });
             }
 
             if (!Array.isArray(result)) {
-                fail(
-                    providerName + " fetchMatches() must return an array."
-                );
+                fail(providerName + " fetchMatches() must return an array.");
             }
 
             result.forEach(function (raw) {
-                const match = normalizeMatch(raw, providerName, null);
-                if (match) allMatches[match.gameId] = match;
+                const match = normalizeMatch(raw, null);
+                if (match) allMatches[toId(match.gameId)] = raw;
             });
 
             console.log(
@@ -427,7 +471,7 @@ async function main() {
     const root = snapshot.val() || {};
 
     const settings = root.settings || {};
-    const selectionSettings = root.competition_selection || {};
+    const selection = root.competition_selection || {};
     const oldMatches = root.matches || {};
     const oldCompetitions = root.competitions || {};
     const oldSports = root.sports || {};
@@ -437,12 +481,10 @@ async function main() {
     const parserSettings = selected.parserSettings;
     const provider = loadProvider(providerName);
 
-    const previousProvider = normalizeProvider(
-        settings.last_synced_api_provider || ""
-    );
-
+    const previousProvider = getPreviousProvider(settings);
     const providerChanged =
-        previousProvider !== "" && previousProvider !== providerName;
+        previousProvider !== "" &&
+        previousProvider !== providerName;
 
     const selectedSports = getSelectedSports(settings);
 
@@ -453,20 +495,9 @@ async function main() {
     console.log("Selected sports:", selectedSports);
 
     /*
-     * When changing providers, intentionally start with empty match,
-     * competition and selection data. Other Firebase nodes remain intact.
+     * Fetch first. Nothing is deleted before successful API retrieval.
      */
-    if (providerChanged) {
-        await db.ref("matches").set({});
-        await db.ref("competitions").set({});
-        await db.ref("competition_selection").set({});
-        console.log("Old provider data cleared.");
-    }
-
-    let catalog = {
-        sports: {},
-        competitions: {}
-    };
+    let catalog = { competitions: {} };
 
     if (typeof provider.fetchCatalog === "function") {
         try {
@@ -477,7 +508,7 @@ async function main() {
                 timeZone: TIME_ZONE
             });
 
-            catalog = normalizeCatalog(rawCatalog, providerName);
+            catalog = normalizeCatalog(rawCatalog);
         } catch (error) {
             console.warn("Catalog fetch failed:", error.message);
         }
@@ -490,106 +521,110 @@ async function main() {
         selectedSports
     );
 
-    /*
-     * Discover competitions from match data when the provider has
-     * no catalog endpoint, or its catalog contains no competitions.
-     */
-    const competitionMap = buildCompetitionMap(
-        fetchedMatches,
-        Object.values(catalog.competitions),
-        providerName
+    if (fetchedMatches.length === 0) {
+        fail("No matches returned. Existing Firebase data was not replaced.");
+    }
+
+    const competitionRaw = Object.assign(
+        {},
+        catalog.competitions
     );
 
-    const competitionIds = Object.keys(competitionMap);
+    fetchedMatches.forEach(function (raw) {
+        const id = getCompetitionId(raw);
+        if (id && !competitionRaw[id]) {
+            competitionRaw[id] = {
+                id: id,
+                name: getCompetitionName(raw),
+                sportId: getSportId(raw)
+            };
+        }
+    });
 
-    if (competitionIds.length === 0) {
+    const newCompetitions = {};
+    const newSelection = {};
+
+    Object.keys(competitionRaw).forEach(function (id) {
+        const competition = normalizeCompetition(
+            competitionRaw[id],
+            providerChanged ? null : oldCompetitions[id],
+            providerChanged ? {} : selection
+        );
+
+        if (!competition) return;
+
+        /*
+         * New competitions from a changed provider start unselected.
+         * Existing selection flags remain unchanged for matching IDs.
+         */
+        newCompetitions[id] = competition;
+        newSelection[id] = competition.selected;
+    });
+
+    if (Object.keys(newCompetitions).length === 0) {
         fail("No competitions discovered. Existing data was not replaced.");
     }
 
-    const newCompetitionSelection = {};
-    const newCompetitions = {};
+    const finalMatches = {};
 
-    competitionIds.forEach(function (id) {
-        const competition = competitionMap[id];
+    /*
+     * Same provider: retain older matches and stream URLs.
+     * Changed provider: don't carry old matches or their stream URLs over.
+     * Every retained match is sanitized to the exact 20-field schema.
+     */
+    if (!providerChanged) {
+        Object.keys(oldMatches).forEach(function (id) {
+            const cleaned = normalizeMatch(oldMatches[id], null);
+            if (cleaned) {
+                finalMatches[toId(cleaned.gameId || id)] = cleaned;
+            }
+        });
+    }
 
-        let isSelected = false;
+    let selectedMatchCount = 0;
 
-        if (providerChanged) {
-            isSelected = true;
-        } else if (selectionSettings[id] === true) {
-            isSelected = true;
-        } else if (
-            oldCompetitions[id] &&
-            oldCompetitions[id].selected === true
-        ) {
-            isSelected = true;
-        } else if (
-            competition.selected === true
-        ) {
-            isSelected = true;
-        }
+    fetchedMatches.forEach(function (raw) {
+        const id = toId(
+            raw.gameId || raw.apiFixtureId || raw.fixtureId || raw.id
+        );
 
-        competition.selected = isSelected;
-        newCompetitions[id] = competition;
-        newCompetitionSelection[id] = isSelected;
-    });
+        if (!id) return;
 
-    const sportsToSave = Object.keys(catalog.sports).length > 0
-        ? catalog.sports
-        : oldSports;
-
-    const filteredMatches = {};
-
-    fetchedMatches.forEach(function (match) {
-        const competitionId = match.competitionId;
-
+        const competitionId = getCompetitionId(raw);
         if (!competitionId) return;
-        if (newCompetitionSelection[competitionId] !== true) return;
+
+        const isSelected = newSelection[competitionId] === true;
+
+        if (!isSelected) return;
 
         if (
             selectedSports.length > 0 &&
-            !selectedSports.includes(toId(match.sportId))
+            !selectedSports.includes(getSportId(raw).toString())
         ) {
             return;
         }
 
-        const gameId = match.gameId;
-        const previousMatch = providerChanged ? null : oldMatches[gameId];
+        const oldMatch = providerChanged ? null : oldMatches[id];
+        const cleaned = normalizeMatch(raw, oldMatch);
 
-        filteredMatches[gameId] = normalizeMatch(
-            match,
-            providerName,
-            previousMatch || null
-        );
+        if (cleaned) {
+            finalMatches[id] = cleaned;
+            selectedMatchCount++;
+        }
     });
 
     /*
-     * On the same provider, keep older records not returned by this
-     * three-day fetch. On a provider change, the old match map is empty.
-     */
-    const finalMatches = providerChanged
-        ? {}
-        : Object.assign({}, oldMatches);
-
-    Object.keys(filteredMatches).forEach(function (gameId) {
-        finalMatches[gameId] = filteredMatches[gameId];
-    });
-
-    const now = Date.now();
-
-    /*
-     * Update only the nodes owned by this sync job.
-     * Do not replace the whole Firebase root.
+     * Only existing Firebase nodes/fields are updated.
+     * No new settings keys and no provider metadata are written.
      */
     const updates = {
-        sports: sportsToSave,
+        sports: oldSports,
         competitions: newCompetitions,
-        competition_selection: newCompetitionSelection,
+        competition_selection: newSelection,
         matches: finalMatches,
-        "settings/last_synced_api_provider": providerName,
-        "settings/last_sync_status": "success",
-        "settings/last_sync_time": now,
-        "settings/last_sync_error": null
+        "settings/last_api": toText(
+            parserSettings.api_url || settings.last_api
+        )
     };
 
     await rootRef.update(updates);
@@ -597,30 +632,15 @@ async function main() {
     console.log("Provider:", providerName);
     console.log("Competitions:", Object.keys(newCompetitions).length);
     console.log("Matches fetched:", fetchedMatches.length);
-    console.log("Selected matches:", Object.keys(filteredMatches).length);
+    console.log("Selected matches:", selectedMatchCount);
     console.log("Total matches stored:", Object.keys(finalMatches).length);
+    console.log("Sports node preserved:", true);
     console.log("Sports Hub sync completed.");
 }
 
 main()
-    .catch(async function (error) {
+    .catch(function (error) {
         console.error("Sports Hub sync failed:", error.message);
-
-        try {
-            if (admin.apps.length > 0) {
-                await admin.database().ref("settings").update({
-                    last_sync_status: "failed",
-                    last_sync_error: error.message,
-                    last_sync_time: Date.now()
-                });
-            }
-        } catch (saveError) {
-            console.error(
-                "Could not save failure status:",
-                saveError.message
-            );
-        }
-
         process.exitCode = 1;
     })
     .finally(async function () {
