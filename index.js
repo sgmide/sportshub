@@ -122,36 +122,63 @@ function getPreviousProvider(settings) {
     return "";
 }
 
+/*
+ * FIX:
+ * Supports selected_sports as either an array or Firebase object/map.
+ *
+ * Supported examples:
+ * ["1", "2"]
+ * {"1": true, "2": false}
+ * [{"id": 1, "selected": true}]
+ */
 function getSelectedSports(settings) {
-    const value = settings.selected_sports;
-
-    if (!Array.isArray(value)) return [];
-
+    const value = settings && settings.selected_sports;
     const result = [];
 
-    value.forEach(function (item, index) {
-        if (item === true && index > 0) {
-            result.push(String(index));
-        } else if (
-            item &&
-            typeof item === "object" &&
-            item.id !== undefined &&
-            item.selected !== false
-        ) {
-            result.push(toId(item.id));
-        } else if (
-            typeof item === "number" ||
-            typeof item === "string"
-        ) {
-            const id = toId(item);
+    if (Array.isArray(value)) {
+        value.forEach(function (item, index) {
+            if (item === true && index > 0) {
+                result.push(String(index));
+            } else if (
+                item &&
+                typeof item === "object"
+            ) {
+                if (
+                    item.id !== undefined &&
+                    item.selected !== false
+                ) {
+                    result.push(toId(item.id));
+                }
+            } else if (
+                typeof item === "number" ||
+                typeof item === "string"
+            ) {
+                const id = toId(item);
 
-            if (id && id !== "0") {
-                result.push(id);
+                if (id && id !== "0") {
+                    result.push(id);
+                }
             }
-        }
-    });
+        });
+    } else if (value && typeof value === "object") {
+        Object.keys(value).forEach(function (id) {
+            const item = value[id];
 
-    return Array.from(new Set(result));
+            if (item === true) {
+                result.push(toId(id));
+            } else if (
+                item &&
+                typeof item === "object" &&
+                item.selected !== false
+            ) {
+                result.push(toId(
+                    item.id !== undefined ? item.id : id
+                ));
+            }
+        });
+    }
+
+    return Array.from(new Set(result.filter(Boolean)));
 }
 
 function loadProvider(providerName) {
@@ -191,7 +218,11 @@ function getCompetitionName(match) {
 }
 
 function getSportId(match) {
-    return toNumber(match.sportId || match.sport_id || 1);
+    return toNumber(
+        match.sportId !== undefined
+            ? match.sportId
+            : (match.sport_id !== undefined ? match.sport_id : 1)
+    );
 }
 
 function normalizeDate(value) {
@@ -236,7 +267,7 @@ function normalizeGoalEvents(value) {
 
 /*
  * Normalize match data for Firebase.
- * Preserve existing streamUrl if the API does not provide one.
+ * Preserve an existing streamUrl if the API does not provide one.
  */
 function normalizeMatch(raw, oldMatch) {
     const match = raw || {};
@@ -369,15 +400,7 @@ function normalizeCompetition(
 }
 
 /*
- * Normalize the provider catalog.
- *
- * The API response can contain:
- * {
- *   sports: [...],
- *   competitions: [...]
- * }
- *
- * It can also contain the arrays inside a nested response object.
+ * Normalize provider catalog.
  */
 function normalizeCatalog(catalog) {
     const competitions = {};
@@ -400,9 +423,9 @@ function normalizeCatalog(catalog) {
             item.leagueId
         );
 
-        if (!id) return;
-
-        competitions[id] = item;
+        if (id) {
+            competitions[id] = item;
+        }
     });
 
     const sportsList = Array.isArray(source.sports)
@@ -425,9 +448,7 @@ function normalizeCatalog(catalog) {
 
 /*
  * Build Firebase sports from the API catalog.
- *
- * For fields missing from the API, preserve existing values.
- * The API's totalGames/liveGames are used directly.
+ * Preserve fields not supplied by the API.
  */
 function buildSportsFromApi(apiSports, oldSports) {
     if (!Array.isArray(apiSports) || apiSports.length === 0) {
@@ -441,9 +462,7 @@ function buildSportsFromApi(apiSports, oldSports) {
         const item = oldSports[key] || {};
         const id = toId(item.id || key);
 
-        if (id) {
-            oldById[id] = item;
-        }
+        if (id) oldById[id] = item;
     });
 
     apiSports.forEach(function (sport) {
@@ -456,7 +475,7 @@ function buildSportsFromApi(apiSports, oldSports) {
         const old = oldById[id] || {};
         const key = id.padStart(2, "0");
 
-        const item = {
+        result[key] = {
             id: /^\d+$/.test(id) ? Number(id) : id,
             name: toText(sport.name),
             nameForURL: toText(
@@ -479,15 +498,9 @@ function buildSportsFromApi(apiSports, oldSports) {
                 ? sport.drawSupport === true
                 : old.drawSupport === true
         };
-
-        result[key] = item;
     });
 
-    if (Object.keys(result).length === 0) {
-        return null;
-    }
-
-    return result;
+    return Object.keys(result).length > 0 ? result : null;
 }
 
 /*
@@ -579,9 +592,6 @@ async function fetchMatches(
     return Object.values(allMatches);
 }
 
-/*
- * Count deduplicated fetched matches by competition ID.
- */
 function buildCompetitionCounts(fetchedMatches) {
     const counts = {};
 
@@ -590,19 +600,12 @@ function buildCompetitionCounts(fetchedMatches) {
 
         if (!id) return;
 
-        if (!counts[id]) {
-            counts[id] = 0;
-        }
-
-        counts[id]++;
+        counts[id] = (counts[id] || 0) + 1;
     });
 
     return counts;
 }
 
-/*
- * Print match counts in GitHub Actions logs.
- */
 function logCompetitionMatchCounts(fetchedMatches, newSelection) {
     const matchCountByCompetition = {};
 
@@ -649,7 +652,6 @@ function logCompetitionMatchCounts(fetchedMatches, newSelection) {
     });
 
     console.log("Competitions with fetched matches:", ids.length);
-
     console.log(
         "Total counted matches:",
         ids.reduce(function (sum, id) {
@@ -697,7 +699,6 @@ async function main() {
     const providerName = selected.name;
     const parserSettings = selected.parserSettings;
     const provider = loadProvider(providerName);
-
     const previousProvider = getPreviousProvider(settings);
 
     const providerChanged =
@@ -708,19 +709,21 @@ async function main() {
 
     console.log("Selected parser:", selected.parserKey);
     console.log("Selected provider:", providerName);
-
-    console.log(
-        "Previous provider:",
-        previousProvider || "not recorded"
-    );
-
+    console.log("Previous provider:", previousProvider || "not recorded");
     console.log("Provider changed:", providerChanged);
-    console.log("Selected sports:", selectedSports);
+    console.log("Selected sports:", JSON.stringify(selectedSports));
 
     /*
-     * Fetch catalog.
-     * A catalog failure is allowed; match data can still supply competitions.
+     * Do not start a 365Scores sync if no sports are selected.
+     * This prevents a misleading empty match result.
      */
+    if (providerName === "365scores" && selectedSports.length === 0) {
+        fail(
+            "No sports selected for 365Scores. " +
+            "Check settings/selected_sports in Firebase."
+        );
+    }
+
     let catalog = {
         competitions: {},
         sports: {}
@@ -769,11 +772,6 @@ async function main() {
         );
     }
 
-    /*
-     * Build updated sports.
-     * Only replace the Firebase sports node when the catalog
-     * actually returns a valid sports array.
-     */
     const builtSports = buildSportsFromApi(
         Object.values(catalog.sports || {}),
         oldSports
@@ -787,15 +785,8 @@ async function main() {
             : "Sports node will be preserved; API sports catalog unavailable."
     );
 
-    /*
-     * Count matches by competition.
-     */
     const competitionCounts = buildCompetitionCounts(fetchedMatches);
-
-    const competitionRaw = Object.assign(
-        {},
-        catalog.competitions
-    );
+    const competitionRaw = Object.assign({}, catalog.competitions);
 
     fetchedMatches.forEach(function (raw) {
         const id = getCompetitionId(raw);
@@ -836,13 +827,6 @@ async function main() {
 
     const finalMatches = {};
 
-    /*
-     * Same provider:
-     * Retain existing matches and stream URLs.
-     *
-     * Changed provider:
-     * Do not carry old matches across.
-     */
     if (!providerChanged) {
         Object.keys(oldMatches).forEach(function (id) {
             const cleaned = normalizeMatch(oldMatches[id], null);
@@ -875,9 +859,7 @@ async function main() {
 
         if (
             selectedSports.length > 0 &&
-            !selectedSports.includes(
-                getSportId(raw).toString()
-            )
+            !selectedSports.includes(String(getSportId(raw)))
         ) {
             return;
         }
@@ -891,9 +873,6 @@ async function main() {
         }
     });
 
-    /*
-     * Save all updates.
-     */
     const updates = {
         sports: newSports,
         competitions: newCompetitions,
@@ -909,6 +888,7 @@ async function main() {
     console.log("");
     console.log("========== SYNC SUMMARY ==========");
     console.log("Provider:", providerName);
+    console.log("Selected sports:", JSON.stringify(selectedSports));
     console.log("Competitions:", Object.keys(newCompetitions).length);
     console.log("Matches fetched:", fetchedMatches.length);
     console.log("Selected matches:", selectedMatchCount);
