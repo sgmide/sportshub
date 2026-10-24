@@ -28,7 +28,9 @@ function getFixturesUrl(parserSettings) {
 }
 
 function toMillis(value) {
-    if (value == null || value === "") return 0;
+    if (value == null || value === "") {
+        return 0;
+    }
 
     if (typeof value === "number") {
         return value < 1000000000000
@@ -42,7 +44,9 @@ function toMillis(value) {
 }
 
 function numberOrZero(value) {
-    if (value == null || value === "") return 0;
+    if (value == null || value === "") {
+        return 0;
+    }
 
     const number = Number(value);
 
@@ -50,7 +54,8 @@ function numberOrZero(value) {
 }
 
 function normalize(fixture) {
-    if (!fixture || !fixture.fixture ||
+    if (!fixture ||
+            !fixture.fixture ||
             fixture.fixture.id == null) {
         return null;
     }
@@ -60,6 +65,7 @@ function normalize(fixture) {
     const teams = fixture.teams || {};
     const goals = fixture.goals || {};
     const scores = fixture.score || {};
+
     const home = teams.home || {};
     const away = teams.away || {};
     const statusInfo = info.status || {};
@@ -68,12 +74,18 @@ function normalize(fixture) {
     const elapsed = statusInfo.elapsed;
 
     const liveStatuses = [
-        "1H", "2H", "HT", "ET", "BT",
-        "P", "LIVE"
+        "1H",
+        "2H",
+        "HT",
+        "ET",
+        "BT",
+        "P",
+        "LIVE"
     ];
 
     const displayStatus =
-        elapsed != null && liveStatuses.indexOf(status) !== -1
+        elapsed != null &&
+        liveStatuses.indexOf(status) !== -1
             ? String(elapsed) + "'"
             : status;
 
@@ -83,7 +95,6 @@ function normalize(fixture) {
     const penalty = scores.penalty || {};
 
     const timestamp = toMillis(info.date);
-
     const venue = info.venue || {};
 
     return {
@@ -91,9 +102,15 @@ function normalize(fixture) {
         apiFixtureId: Number(info.id),
         apiProvider: "api-football",
 
+        sportId: 1,
+
         competitionId: numberOrZero(league.id),
         competitionName: league.name || "",
-        sportId: 1,
+        country: league.country || "",
+        competitionLogo: league.logo || "",
+        competitionFlag: league.flag || "",
+        season: numberOrZero(league.season),
+        round: league.round || "",
 
         homeCompetitorId: numberOrZero(home.id),
         awayCompetitorId: numberOrZero(away.id),
@@ -119,7 +136,6 @@ function normalize(fixture) {
         penaltyHomeScore: numberOrZero(penalty.home),
         penaltyAwayScore: numberOrZero(penalty.away),
 
-        // Preserve event data when the provider supplies it.
         goalEvents: Array.isArray(fixture.goalEvents)
             ? fixture.goalEvents
             : [],
@@ -130,9 +146,8 @@ function normalize(fixture) {
         status: displayStatus,
         shortStatus: status,
 
-        round: league.round || "",
-        season: numberOrZero(league.season),
         venue: venue.name || "",
+        venueCity: venue.city || "",
 
         streamUrl: ""
     };
@@ -146,23 +161,29 @@ async function fetchMatches(options) {
     const parserSettings = options.parserSettings || {};
 
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        throw new Error("Invalid date. Expected YYYY-MM-DD");
+        throw new Error(
+            "Invalid date. Expected YYYY-MM-DD"
+        );
     }
 
     const apiKey = getApiKey(settings);
 
     if (!apiKey) {
-        throw new Error("API_FOOTBALL_KEY secret is missing");
+        throw new Error(
+            "API_FOOTBALL_KEY secret is missing"
+        );
     }
 
     const url = getFixturesUrl(parserSettings);
 
     const response = await axios.get(url, {
         timeout: 30000,
+
         params: {
             date: date,
             timezone: "Asia/Kolkata"
         },
+
         headers: {
             "x-apisports-key": apiKey,
             "Accept": "application/json"
@@ -180,7 +201,9 @@ async function fetchMatches(options) {
     }
 
     if (!Array.isArray(data.response)) {
-        throw new Error("Unexpected API-Football response");
+        throw new Error(
+            "Unexpected API-Football response"
+        );
     }
 
     const unique = Object.create(null);
@@ -198,8 +221,11 @@ async function fetchMatches(options) {
     });
 
     console.log(
-        "API-Football " + date +
-        ": " + matches.length + " fixtures"
+        "API-Football " +
+        date +
+        ": " +
+        matches.length +
+        " fixtures"
     );
 
     return matches;
