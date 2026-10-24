@@ -3,14 +3,9 @@
 
 const axios = require("axios");
 
-const BASE_URL =
-    "https://webws.365scores.com/web/games/";
-
-const CATALOG_URL =
-    "https://webws.365scores.com/web/sports/";
-
-const GAME_URL =
-    "https://webws.365scores.com/web/game/";
+const BASE_URL = "https://webws.365scores.com/web/games/";
+const CATALOG_URL = "https://webws.365scores.com/web/sports/";
+const GAME_URL = "https://webws.365scores.com/web/game/";
 
 const TIME_ZONE = "Asia/Kolkata";
 const PROVIDER_NAME = "365scores";
@@ -36,16 +31,17 @@ function toNumber(value, fallback) {
     if (
         value === undefined ||
         value === null ||
-        value === ""
+        value === "" ||
+        typeof value === "object"
     ) {
-        return fallback || 0;
+        return fallback === undefined ? 0 : fallback;
     }
 
     const result = Number(value);
 
     return Number.isFinite(result)
         ? result
-        : (fallback || 0);
+        : (fallback === undefined ? 0 : fallback);
 }
 
 /*
@@ -60,13 +56,37 @@ function toStringValue(value) {
         return "";
     }
 
-    return String(value);
+    return String(value).trim();
 }
 
 /*
- * Date formatter: DD/MM/YYYY
+ * Convert a date to a valid Date object.
  */
-function getDateString(date) {
+function parseDate(value) {
+    if (!value) {
+        return null;
+    }
+
+    const parsed = value instanceof Date
+        ? value
+        : new Date(value);
+
+    return Number.isFinite(parsed.getTime())
+        ? parsed
+        : null;
+}
+
+/*
+ * Format date using India time zone.
+ * Output: DD-MM-YYYY
+ */
+function getFirebaseDate(value) {
+    const date = parseDate(value);
+
+    if (!date) {
+        return "";
+    }
+
     const parts = new Intl.DateTimeFormat("en-GB", {
         timeZone: TIME_ZONE,
         day: "2-digit",
@@ -80,54 +100,18 @@ function getDateString(date) {
         values[part.type] = part.value;
     });
 
-    return values.day + "/" +
-        values.month + "/" +
-        values.year;
-}
-
-/*
- * Firebase date: DD-MM-YYYY
- */
-function getFirebaseDate(date) {
-    if (!date) {
-        return "";
-    }
-
-    const parsed = new Date(date);
-
-    if (!Number.isFinite(parsed.getTime())) {
-        return "";
-    }
-
-    const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: TIME_ZONE,
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric"
-    }).formatToParts(parsed);
-
-    const values = {};
-
-    parts.forEach(function (part) {
-        values[part.type] = part.value;
-    });
-
     return values.day + "-" +
         values.month + "-" +
         values.year;
 }
 
 /*
- * Firebase time: local Indian time
+ * Format time using India time zone.
  */
-function getFirebaseTime(date) {
+function getFirebaseTime(value) {
+    const date = parseDate(value);
+
     if (!date) {
-        return "";
-    }
-
-    const parsed = new Date(date);
-
-    if (!Number.isFinite(parsed.getTime())) {
         return "";
     }
 
@@ -136,37 +120,46 @@ function getFirebaseTime(date) {
         hour: "2-digit",
         minute: "2-digit",
         hour12: true
-    }).format(parsed);
+    }).format(date);
 }
 
 /*
- * Unix timestamp in milliseconds
+ * Unix timestamp in milliseconds.
  */
-function getTimestamp(date) {
-    if (!date) {
-        return 0;
-    }
+function getTimestamp(value) {
+    const date = parseDate(value);
 
-    const timestamp = new Date(date).getTime();
-
-    return Number.isFinite(timestamp)
-        ? timestamp
-        : 0;
+    return date ? date.getTime() : 0;
 }
 
 /*
- * Get a competitor safely
+ * Extract game start time.
+ */
+function getStartTime(game) {
+    return game.startTime ||
+        game.startDate ||
+        game.date ||
+        game.start_time ||
+        "";
+}
+
+/*
+ * Extract a competitor safely.
  */
 function getCompetitor(game, side) {
     const key = side === "home"
         ? "homeCompetitor"
         : "awayCompetitor";
 
-    return game[key] || {};
+    const competitor = game[key];
+
+    return competitor && typeof competitor === "object"
+        ? competitor
+        : {};
 }
 
 /*
- * Competitor logo
+ * Competitor logo.
  */
 function getCompetitorLogo(competitor) {
     if (!competitor || !competitor.id) {
@@ -179,7 +172,8 @@ function getCompetitorLogo(competitor) {
 }
 
 /*
- * Score formatter
+ * Score formatter.
+ * Missing scores remain empty; they are not converted to zero.
  */
 function getScore(home, away) {
     if (
@@ -196,7 +190,7 @@ function getScore(home, away) {
 }
 
 /*
- * Normalize goal events
+ * Normalize goal events.
  */
 function normalizeGoalEvents(events) {
     if (!Array.isArray(events)) {
@@ -204,6 +198,8 @@ function normalizeGoalEvents(events) {
     }
 
     return events.map(function (event) {
+        event = event || {};
+
         return {
             competitorId: toNumber(event.competitorId),
             gameTime: toStringValue(event.gameTime),
@@ -215,7 +211,7 @@ function normalizeGoalEvents(events) {
 }
 
 /*
- * Extract competition ID
+ * Extract competition ID.
  */
 function getCompetitionId(game) {
     const competition = game.competition || {};
@@ -233,7 +229,7 @@ function getCompetitionId(game) {
 }
 
 /*
- * Extract competition name
+ * Extract competition name.
  */
 function getCompetitionName(game) {
     const competition = game.competition || {};
@@ -253,7 +249,7 @@ function getCompetitionName(game) {
 }
 
 /*
- * Extract sport ID
+ * Extract sport ID.
  */
 function getSportId(game) {
     const sport = game.sport;
@@ -268,7 +264,34 @@ function getSportId(game) {
 }
 
 /*
- * Normalize one game to Firebase match structure
+ * Extract status text without turning objects into strings.
+ */
+function getStatusText(game) {
+    const status = game.status;
+
+    if (typeof status === "string" ||
+        typeof status === "number") {
+        return toStringValue(
+            game.statusText ||
+            game.shortStatusText ||
+            status
+        );
+    }
+
+    return toStringValue(
+        game.statusText ||
+        game.shortStatusText ||
+        (status && (
+            status.shortName ||
+            status.name ||
+            status.text
+        )) ||
+        ""
+    );
+}
+
+/*
+ * Normalize one game to the Sports Hub Firebase structure.
  */
 function normalizeMatch(game) {
     game = game || {};
@@ -282,22 +305,13 @@ function normalizeMatch(game) {
         game.fixtureId
     );
 
-    const startTime =
-        game.startTime ||
-        game.date ||
-        "";
-
+    const startTime = getStartTime(game);
     const timestamp = getTimestamp(startTime);
+
     const competitionId = getCompetitionId(game);
     const competitionName = getCompetitionName(game);
     const sportId = getSportId(game);
-
-    const status = toStringValue(
-        game.statusText ||
-        game.shortStatusText ||
-        game.status ||
-        ""
-    );
+    const status = getStatusText(game);
 
     return {
         gameId: gameId,
@@ -327,13 +341,20 @@ function normalizeMatch(game) {
 
         score: getScore(home, away),
 
+        homeScore: home.score === undefined
+            ? null
+            : home.score,
+
+        awayScore: away.score === undefined
+            ? null
+            : away.score,
+
         status: status,
 
         shortStatus: toStringValue(
             game.shortStatusText ||
-            game.statusText ||
-            game.status ||
-            ""
+            game.statusShort ||
+            status
         ),
 
         round: toStringValue(game.roundName),
@@ -346,16 +367,18 @@ function normalizeMatch(game) {
             ""
         ),
 
-        goalEvents: normalizeGoalEvents(
-            game.goalEvents
-        ),
+        goalEvents: normalizeGoalEvents(game.goalEvents),
 
+        /*
+         * index.js must preserve the old streamUrl on same-provider
+         * updates when this value is empty.
+         */
         streamUrl: ""
     };
 }
 
 /*
- * Normalize competition catalog item
+ * Normalize competition catalog item.
  */
 function normalizeCompetition(item) {
     item = item || {};
@@ -418,7 +441,7 @@ function normalizeCompetition(item) {
 }
 
 /*
- * Normalize sport catalog item
+ * Normalize sport catalog item.
  */
 function normalizeSport(item) {
     item = item || {};
@@ -449,16 +472,14 @@ function normalizeSport(item) {
 }
 
 /*
- * HTTP GET helper
+ * HTTP GET helper.
  */
 async function request(url, params) {
     const response = await axios.get(url, {
         params: getParams(params),
-
         timeout: 30000,
-
         headers: {
-            "Accept": "application/json",
+            Accept: "application/json",
             "User-Agent": "Mozilla/5.0"
         }
     });
@@ -467,11 +488,7 @@ async function request(url, params) {
 }
 
 /*
- * STAGE 1:
- * Fetch sports catalog.
- *
- * The endpoint may return no competitions.
- * An empty competitions array is valid here.
+ * Fetch sports and competition catalog.
  */
 async function fetchCatalog(options) {
     options = options || {};
@@ -486,11 +503,7 @@ async function fetchCatalog(options) {
         ? data.competitions.map(normalizeCompetition)
         : [];
 
-    console.log(
-        "365Scores catalog sports:",
-        sports.length
-    );
-
+    console.log("365Scores catalog sports:", sports.length);
     console.log(
         "365Scores catalog competitions:",
         competitions.length
@@ -506,10 +519,9 @@ async function fetchCatalog(options) {
 }
 
 /*
- * Fetch games for selected sports and date range.
+ * Fetch matches for selected sports and date range.
  *
- * The caller decides which competitions are selected
- * and which matches should be saved to Firebase.
+ * Expected dates: DD/MM/YYYY.
  */
 async function fetchMatches(options) {
     options = options || {};
@@ -568,13 +580,6 @@ async function fetchMatches(options) {
                 "Sample game fields:",
                 Object.keys(games[0]).join(", ")
             );
-
-            console.log(
-                "Sample competition ID:",
-                getCompetitionId(games[0]),
-                "sport ID:",
-                getSportId(games[0])
-            );
         }
 
         games.forEach(function (game) {
@@ -593,7 +598,7 @@ async function fetchMatches(options) {
 }
 
 /*
- * Fetch raw details for one game.
+ * Fetch raw details for a single game.
  */
 async function fetchGameDetails(gameId) {
     if (
@@ -610,7 +615,7 @@ async function fetchGameDetails(gameId) {
 }
 
 /*
- * Exports
+ * Module exports.
  */
 module.exports = {
     providerName: PROVIDER_NAME,
