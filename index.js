@@ -236,7 +236,8 @@ function normalizeGoalEvents(value) {
 }
 
 /*
- * Keep the existing Firebase match fields.
+ * Firebase match whitelist.
+ * Existing match fields are retained.
  */
 function normalizeMatch(raw, oldMatch) {
     const match = raw || {};
@@ -327,9 +328,14 @@ function normalizeMatch(raw, oldMatch) {
 }
 
 /*
- * Keep the existing four competition fields.
+ * Competition fields now include matchCount.
  */
-function normalizeCompetition(raw, oldCompetition, selection) {
+function normalizeCompetition(
+    raw,
+    oldCompetition,
+    selection,
+    matchCount
+) {
     const id = toId(
         raw.id || raw.competitionId || raw.leagueId
     );
@@ -358,7 +364,8 @@ function normalizeCompetition(raw, oldCompetition, selection) {
             id
         ),
         selected: selected,
-        sportId: toNumber(raw.sportId || raw.sport_id || 1)
+        sportId: toNumber(raw.sportId || raw.sport_id || 1),
+        matchCount: toNumber(matchCount)
     };
 }
 
@@ -382,16 +389,14 @@ function normalizeCatalog(catalog) {
         competitions[id] = item;
     });
 
-    // Preserve the existing Firebase sports node.
+    /*
+     * Preserve the existing Firebase sports node.
+     */
     return {
         competitions: competitions
     };
 }
 
-/*
- * Fetch matches for yesterday, today and tomorrow.
- * Deduplicate by game ID.
- */
 async function fetchMatches(
     provider,
     providerName,
@@ -464,28 +469,48 @@ async function fetchMatches(
     }
 
     /*
-     * Do not replace existing data if all requests fail.
-     */
-    if (Object.keys(allMatches).length === 0 && errors.length > 0) {
-        fail("No matches fetched. " + errors.join(" | "));
-    }
-
-    /*
-     * Avoid publishing partial counts when any date failed.
-     * This prevents incomplete data from replacing the previous counts.
+     * Do not update Firebase if even one date failed.
+     * This prevents incorrect matchCount values from partial data.
      */
     if (errors.length > 0) {
         fail(
-            "One or more date requests failed. Counts were not updated. " +
+            "One or more date requests failed. " +
+            "Existing Firebase data was not updated. " +
             errors.join(" | ")
         );
+    }
+
+    if (Object.keys(allMatches).length === 0) {
+        fail("No matches fetched. Existing Firebase data was not updated.");
     }
 
     return Object.values(allMatches);
 }
 
 /*
- * Print fetched match counts by competition.
+ * Count deduplicated fetched matches by competition ID.
+ */
+function buildCompetitionCounts(fetchedMatches) {
+    const counts = {};
+
+    fetchedMatches.forEach(function (match) {
+        const id = getCompetitionId(match);
+
+        if (!id) return;
+
+        if (!counts[id]) {
+            counts[id] = 0;
+        }
+
+        counts[id]++;
+    });
+
+    return counts;
+}
+
+/*
+ * Diagnostic:
+ * Print match counts for GitHub Actions logs.
  */
 function logCompetitionMatchCounts(fetchedMatches, newSelection) {
     const matchCountByCompetition = {};
@@ -495,11 +520,12 @@ function logCompetitionMatchCounts(fetchedMatches, newSelection) {
 
         if (!id) return;
 
+        const name = getCompetitionName(match);
         const key = String(id);
 
         if (!matchCountByCompetition[key]) {
             matchCountByCompetition[key] = {
-                name: getCompetitionName(match),
+                name: name,
                 total: 0,
                 selected: newSelection[key] === true
             };
@@ -532,46 +558,16 @@ function logCompetitionMatchCounts(fetchedMatches, newSelection) {
     });
 
     console.log("Competitions with fetched matches:", ids.length);
+
     console.log(
         "Total counted matches:",
         ids.reduce(function (sum, id) {
             return sum + matchCountByCompetition[id].total;
         }, 0)
     );
+
     console.log("================================================");
     console.log("");
-}
-
-/*
- * Create competition_counts from the active provider's
- * successfully fetched and deduplicated matches.
- *
- * This counts all fetched competitions, not just selected ones.
- */
-function buildCompetitionCounts(fetchedMatches) {
-    const counts = {};
-
-    fetchedMatches.forEach(function (match) {
-        const id = getCompetitionId(match);
-
-        if (!id) return;
-
-        const key = String(id);
-
-        if (!counts[key]) {
-            counts[key] = {
-                competitionId: /^\d+$/.test(key)
-                    ? Number(key)
-                    : key,
-                name: getCompetitionName(match),
-                matchCount: 0
-            };
-        }
-
-        counts[key].matchCount++;
-    });
-
-    return counts;
 }
 
 async function main() {
@@ -621,15 +617,18 @@ async function main() {
 
     console.log("Selected parser:", selected.parserKey);
     console.log("Selected provider:", providerName);
+
     console.log(
         "Previous provider:",
         previousProvider || "not recorded"
     );
+
     console.log("Provider changed:", providerChanged);
     console.log("Selected sports:", selectedSports);
 
     /*
-     * Fetch the competition catalog.
+     * Fetch catalog first.
+     * A catalog failure is allowed; match data can still supply competitions.
      */
     let catalog = { competitions: {} };
 
@@ -644,10 +643,6 @@ async function main() {
 
             catalog = normalizeCatalog(rawCatalog);
         } catch (error) {
-            /*
-             * A failed catalog request does not abort match fetching.
-             * Competitions can still be discovered from fetched matches.
-             */
             console.warn("Catalog fetch failed:", error.message);
         }
     }
@@ -666,9 +661,10 @@ async function main() {
     }
 
     /*
-     * Build competition catalog from both the API catalog
-     * and competitions found in the fetched matches.
+     * Count matches by competition before creating competition objects.
      */
+    const competitionCounts = buildCompetitionCounts(fetchedMatches);
+
     const competitionRaw = Object.assign(
         {},
         catalog.competitions
@@ -693,7 +689,8 @@ async function main() {
         const competition = normalizeCompetition(
             competitionRaw[id],
             providerChanged ? null : oldCompetitions[id],
-            providerChanged ? {} : selection
+            providerChanged ? {} : selection,
+            competitionCounts[id] || 0
         );
 
         if (!competition) return;
@@ -709,30 +706,18 @@ async function main() {
     }
 
     /*
-     * Count all fetched matches by competition.
-     * The count does not depend on selection checkboxes.
+     * Print the counts in GitHub Actions logs too.
      */
     logCompetitionMatchCounts(fetchedMatches, newSelection);
-
-    const competitionCounts =
-        buildCompetitionCounts(fetchedMatches);
-
-    if (Object.keys(competitionCounts).length === 0) {
-        fail(
-            "No competition counts generated. Existing counts were preserved."
-        );
-    }
-
-    console.log(
-        "Competition counts generated:",
-        Object.keys(competitionCounts).length
-    );
 
     const finalMatches = {};
 
     /*
-     * Same provider: retain existing matches and their stream URLs.
-     * Changed provider: do not carry old matches across.
+     * Same provider:
+     * Retain existing matches and their stream URLs.
+     *
+     * Changed provider:
+     * Do not carry old matches across.
      */
     if (!providerChanged) {
         Object.keys(oldMatches).forEach(function (id) {
@@ -783,18 +768,13 @@ async function main() {
     });
 
     /*
-     * Replace competition_counts atomically with this sync's
-     * newly generated counts. Old competition IDs not present
-     * in the new object are removed by Firebase update semantics
-     * for this top-level child.
-     *
-     * Existing sports node and match schema are preserved.
+     * Save matchCount inside each competition.
+     * No separate competition_counts node is created.
      */
     const updates = {
         sports: oldSports,
         competitions: newCompetitions,
         competition_selection: newSelection,
-        competition_counts: competitionCounts,
         matches: finalMatches,
         "settings/last_api": toText(
             parserSettings.api_url || settings.last_api
@@ -806,20 +786,21 @@ async function main() {
     console.log("");
     console.log("========== SYNC SUMMARY ==========");
     console.log("Provider:", providerName);
+
     console.log(
         "Competitions:",
         Object.keys(newCompetitions).length
     );
+
     console.log("Matches fetched:", fetchedMatches.length);
-    console.log(
-        "Competition counts:",
-        Object.keys(competitionCounts).length
-    );
     console.log("Selected matches:", selectedMatchCount);
+
     console.log(
         "Total matches stored:",
         Object.keys(finalMatches).length
     );
+
+    console.log("Competition matchCount saved:", true);
     console.log("Sports node preserved:", true);
     console.log("Sports Hub sync completed.");
     console.log("==================================");
