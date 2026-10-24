@@ -60,7 +60,7 @@ function toStringValue(value) {
 }
 
 /*
- * Convert a date to a valid Date object.
+ * Convert to valid Date
  */
 function parseDate(value) {
     if (!value) {
@@ -77,8 +77,7 @@ function parseDate(value) {
 }
 
 /*
- * Format date using India time zone.
- * Output: DD-MM-YYYY
+ * Format date: DD-MM-YYYY
  */
 function getFirebaseDate(value) {
     const date = parseDate(value);
@@ -106,7 +105,7 @@ function getFirebaseDate(value) {
 }
 
 /*
- * Format time using India time zone.
+ * Format time using India time zone
  */
 function getFirebaseTime(value) {
     const date = parseDate(value);
@@ -124,7 +123,7 @@ function getFirebaseTime(value) {
 }
 
 /*
- * Unix timestamp in milliseconds.
+ * Timestamp in milliseconds
  */
 function getTimestamp(value) {
     const date = parseDate(value);
@@ -133,7 +132,7 @@ function getTimestamp(value) {
 }
 
 /*
- * Extract game start time.
+ * Extract game start time
  */
 function getStartTime(game) {
     return game.startTime ||
@@ -144,7 +143,7 @@ function getStartTime(game) {
 }
 
 /*
- * Extract a competitor safely.
+ * Extract competitor
  */
 function getCompetitor(game, side) {
     const key = side === "home"
@@ -159,10 +158,14 @@ function getCompetitor(game, side) {
 }
 
 /*
- * Competitor logo.
+ * Competitor logo
  */
 function getCompetitorLogo(competitor) {
-    if (!competitor || !competitor.id) {
+    if (
+        !competitor ||
+        competitor.id === undefined ||
+        competitor.id === null
+    ) {
         return "";
     }
 
@@ -172,8 +175,7 @@ function getCompetitorLogo(competitor) {
 }
 
 /*
- * Score formatter.
- * Missing scores remain empty; they are not converted to zero.
+ * Score formatter
  */
 function getScore(home, away) {
     if (
@@ -190,7 +192,7 @@ function getScore(home, away) {
 }
 
 /*
- * Normalize goal events.
+ * Normalize goal events
  */
 function normalizeGoalEvents(events) {
     if (!Array.isArray(events)) {
@@ -211,7 +213,7 @@ function normalizeGoalEvents(events) {
 }
 
 /*
- * Extract competition ID.
+ * Extract competition ID
  */
 function getCompetitionId(game) {
     const competition = game.competition || {};
@@ -229,7 +231,7 @@ function getCompetitionId(game) {
 }
 
 /*
- * Extract competition name.
+ * Extract competition name
  */
 function getCompetitionName(game) {
     const competition = game.competition || {};
@@ -249,7 +251,7 @@ function getCompetitionName(game) {
 }
 
 /*
- * Extract sport ID.
+ * Extract sport ID
  */
 function getSportId(game) {
     const sport = game.sport;
@@ -264,13 +266,15 @@ function getSportId(game) {
 }
 
 /*
- * Extract status text without turning objects into strings.
+ * Extract status text
  */
 function getStatusText(game) {
     const status = game.status;
 
-    if (typeof status === "string" ||
-        typeof status === "number") {
+    if (
+        typeof status === "string" ||
+        typeof status === "number"
+    ) {
         return toStringValue(
             game.statusText ||
             game.shortStatusText ||
@@ -281,17 +285,19 @@ function getStatusText(game) {
     return toStringValue(
         game.statusText ||
         game.shortStatusText ||
-        (status && (
-            status.shortName ||
-            status.name ||
-            status.text
-        )) ||
+        (
+            status && (
+                status.shortName ||
+                status.name ||
+                status.text
+            )
+        ) ||
         ""
     );
 }
 
 /*
- * Normalize one game to the Sports Hub Firebase structure.
+ * Normalize one match
  */
 function normalizeMatch(game) {
     game = game || {};
@@ -370,15 +376,15 @@ function normalizeMatch(game) {
         goalEvents: normalizeGoalEvents(game.goalEvents),
 
         /*
-         * index.js must preserve the old streamUrl on same-provider
-         * updates when this value is empty.
+         * index.js should preserve the existing streamUrl
+         * when updating a match from the same provider.
          */
         streamUrl: ""
     };
 }
 
 /*
- * Normalize competition catalog item.
+ * Normalize competition catalog item
  */
 function normalizeCompetition(item) {
     item = item || {};
@@ -441,7 +447,7 @@ function normalizeCompetition(item) {
 }
 
 /*
- * Normalize sport catalog item.
+ * Normalize sport catalog item
  */
 function normalizeSport(item) {
     item = item || {};
@@ -464,15 +470,19 @@ function normalizeSport(item) {
 
         nameForURL: toStringValue(item.nameForURL),
 
+        drawSupport: item.drawSupport === true,
+
         totalGames: toNumber(item.totalGames),
         liveGames: toNumber(item.liveGames),
+
+        imageVersion: toNumber(item.imageVersion),
 
         provider: PROVIDER_NAME
     };
 }
 
 /*
- * HTTP GET helper.
+ * HTTP GET helper
  */
 async function request(url, params) {
     const response = await axios.get(url, {
@@ -489,11 +499,14 @@ async function request(url, params) {
 
 /*
  * Fetch sports and competition catalog.
+ *
+ * The /web/games/ response supplied by the user contains
+ * sports[].totalGames and sports[].liveGames.
  */
 async function fetchCatalog(options) {
     options = options || {};
 
-    const data = await request(CATALOG_URL, {});
+    const data = await request(BASE_URL, {});
 
     const sports = Array.isArray(data.sports)
         ? data.sports.map(normalizeSport)
@@ -503,18 +516,40 @@ async function fetchCatalog(options) {
         ? data.competitions.map(normalizeCompetition)
         : [];
 
-    console.log("365Scores catalog sports:", sports.length);
+    console.log(
+        "365Scores catalog sports:",
+        sports.length
+    );
+
     console.log(
         "365Scores catalog competitions:",
         competitions.length
     );
+
+    console.log(
+        "365Scores overall liveGamesCount:",
+        toNumber(data.liveGamesCount)
+    );
+
+    sports.forEach(function (sport) {
+        console.log(
+            "365Scores sport:",
+            sport.id,
+            sport.name,
+            "| totalGames:",
+            sport.totalGames,
+            "| liveGames:",
+            sport.liveGames
+        );
+    });
 
     return {
         sports: sports,
         countries: Array.isArray(data.countries)
             ? data.countries
             : [],
-        competitions: competitions
+        competitions: competitions,
+        liveGamesCount: toNumber(data.liveGamesCount)
     };
 }
 
@@ -585,7 +620,10 @@ async function fetchMatches(options) {
         games.forEach(function (game) {
             const match = normalizeMatch(game);
 
-            if (!match.gameId || seen[match.gameId]) {
+            if (
+                !match.gameId ||
+                seen[match.gameId]
+            ) {
                 return;
             }
 
@@ -598,7 +636,7 @@ async function fetchMatches(options) {
 }
 
 /*
- * Fetch raw details for a single game.
+ * Fetch raw details for one game
  */
 async function fetchGameDetails(gameId) {
     if (
@@ -615,7 +653,7 @@ async function fetchGameDetails(gameId) {
 }
 
 /*
- * Module exports.
+ * Module exports
  */
 module.exports = {
     providerName: PROVIDER_NAME,
