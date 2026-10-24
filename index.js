@@ -1,4 +1,3 @@
-
 "use strict";
 
 const admin = require("firebase-admin");
@@ -236,8 +235,8 @@ function normalizeGoalEvents(value) {
 }
 
 /*
- * Firebase match whitelist.
- * Existing match fields are retained.
+ * Normalize match data for Firebase.
+ * Preserve existing streamUrl if the API does not provide one.
  */
 function normalizeMatch(raw, oldMatch) {
     const match = raw || {};
@@ -328,7 +327,7 @@ function normalizeMatch(raw, oldMatch) {
 }
 
 /*
- * Competition fields now include matchCount.
+ * Normalize competition data.
  */
 function normalizeCompetition(
     raw,
@@ -369,15 +368,32 @@ function normalizeCompetition(
     };
 }
 
+/*
+ * Normalize the provider catalog.
+ *
+ * The API response can contain:
+ * {
+ *   sports: [...],
+ *   competitions: [...]
+ * }
+ *
+ * It can also contain the arrays inside a nested response object.
+ */
 function normalizeCatalog(catalog) {
     const competitions = {};
+    const sports = {};
 
-    const list = catalog &&
-        Array.isArray(catalog.competitions)
-        ? catalog.competitions
+    let source = catalog || {};
+
+    if (source.data && typeof source.data === "object") {
+        source = source.data;
+    }
+
+    const competitionList = Array.isArray(source.competitions)
+        ? source.competitions
         : [];
 
-    list.forEach(function (item) {
+    competitionList.forEach(function (item) {
         const id = toId(
             item.id ||
             item.competitionId ||
@@ -389,14 +405,94 @@ function normalizeCatalog(catalog) {
         competitions[id] = item;
     });
 
-    /*
-     * Preserve the existing Firebase sports node.
-     */
+    const sportsList = Array.isArray(source.sports)
+        ? source.sports
+        : [];
+
+    sportsList.forEach(function (item) {
+        const id = toId(item.id);
+
+        if (!id || !item.name) return;
+
+        sports[id] = item;
+    });
+
     return {
-        competitions: competitions
+        competitions: competitions,
+        sports: sports
     };
 }
 
+/*
+ * Build Firebase sports from the API catalog.
+ *
+ * For fields missing from the API, preserve existing values.
+ * The API's totalGames/liveGames are used directly.
+ */
+function buildSportsFromApi(apiSports, oldSports) {
+    if (!Array.isArray(apiSports) || apiSports.length === 0) {
+        return null;
+    }
+
+    const result = {};
+    const oldById = {};
+
+    Object.keys(oldSports || {}).forEach(function (key) {
+        const item = oldSports[key] || {};
+        const id = toId(item.id || key);
+
+        if (id) {
+            oldById[id] = item;
+        }
+    });
+
+    apiSports.forEach(function (sport) {
+        if (!sport) return;
+
+        const id = toId(sport.id);
+
+        if (!id || !toText(sport.name)) return;
+
+        const old = oldById[id] || {};
+        const key = id.padStart(2, "0");
+
+        const item = {
+            id: /^\d+$/.test(id) ? Number(id) : id,
+            name: toText(sport.name),
+            nameForURL: toText(
+                sport.nameForURL !== undefined
+                    ? sport.nameForURL
+                    : old.nameForURL
+            ),
+            totalGames: sport.totalGames !== undefined
+                ? toNumber(sport.totalGames)
+                : toNumber(old.totalGames),
+            liveGames: sport.liveGames !== undefined
+                ? toNumber(sport.liveGames)
+                : toNumber(old.liveGames),
+            imageVersion: sport.imageVersion !== undefined
+                ? sport.imageVersion
+                : (old.imageVersion !== undefined
+                    ? old.imageVersion
+                    : 1),
+            drawSupport: sport.drawSupport !== undefined
+                ? sport.drawSupport === true
+                : old.drawSupport === true
+        };
+
+        result[key] = item;
+    });
+
+    if (Object.keys(result).length === 0) {
+        return null;
+    }
+
+    return result;
+}
+
+/*
+ * Fetch matches for yesterday, today and tomorrow.
+ */
 async function fetchMatches(
     provider,
     providerName,
@@ -468,10 +564,6 @@ async function fetchMatches(
         }
     }
 
-    /*
-     * Do not update Firebase if even one date failed.
-     * This prevents incorrect matchCount values from partial data.
-     */
     if (errors.length > 0) {
         fail(
             "One or more date requests failed. " +
@@ -509,8 +601,7 @@ function buildCompetitionCounts(fetchedMatches) {
 }
 
 /*
- * Diagnostic:
- * Print match counts for GitHub Actions logs.
+ * Print match counts in GitHub Actions logs.
  */
 function logCompetitionMatchCounts(fetchedMatches, newSelection) {
     const matchCountByCompetition = {};
@@ -627,10 +718,13 @@ async function main() {
     console.log("Selected sports:", selectedSports);
 
     /*
-     * Fetch catalog first.
+     * Fetch catalog.
      * A catalog failure is allowed; match data can still supply competitions.
      */
-    let catalog = { competitions: {} };
+    let catalog = {
+        competitions: {},
+        sports: {}
+    };
 
     if (typeof provider.fetchCatalog === "function") {
         try {
@@ -642,9 +736,24 @@ async function main() {
             });
 
             catalog = normalizeCatalog(rawCatalog);
+
+            console.log(
+                "Catalog sports received:",
+                Object.keys(catalog.sports).length
+            );
+
+            console.log(
+                "Catalog competitions received:",
+                Object.keys(catalog.competitions).length
+            );
         } catch (error) {
             console.warn("Catalog fetch failed:", error.message);
         }
+    } else {
+        console.warn(
+            "Provider does not implement fetchCatalog(); " +
+            "existing sports data will be preserved."
+        );
     }
 
     const fetchedMatches = await fetchMatches(
@@ -661,7 +770,25 @@ async function main() {
     }
 
     /*
-     * Count matches by competition before creating competition objects.
+     * Build updated sports.
+     * Only replace the Firebase sports node when the catalog
+     * actually returns a valid sports array.
+     */
+    const builtSports = buildSportsFromApi(
+        Object.values(catalog.sports || {}),
+        oldSports
+    );
+
+    const newSports = builtSports || oldSports;
+
+    console.log(
+        builtSports
+            ? "Sports node will be updated from API catalog."
+            : "Sports node will be preserved; API sports catalog unavailable."
+    );
+
+    /*
+     * Count matches by competition.
      */
     const competitionCounts = buildCompetitionCounts(fetchedMatches);
 
@@ -705,16 +832,13 @@ async function main() {
         );
     }
 
-    /*
-     * Print the counts in GitHub Actions logs too.
-     */
     logCompetitionMatchCounts(fetchedMatches, newSelection);
 
     const finalMatches = {};
 
     /*
      * Same provider:
-     * Retain existing matches and their stream URLs.
+     * Retain existing matches and stream URLs.
      *
      * Changed provider:
      * Do not carry old matches across.
@@ -768,11 +892,10 @@ async function main() {
     });
 
     /*
-     * Save matchCount inside each competition.
-     * No separate competition_counts node is created.
+     * Save all updates.
      */
     const updates = {
-        sports: oldSports,
+        sports: newSports,
         competitions: newCompetitions,
         competition_selection: newSelection,
         matches: finalMatches,
@@ -786,22 +909,13 @@ async function main() {
     console.log("");
     console.log("========== SYNC SUMMARY ==========");
     console.log("Provider:", providerName);
-
-    console.log(
-        "Competitions:",
-        Object.keys(newCompetitions).length
-    );
-
+    console.log("Competitions:", Object.keys(newCompetitions).length);
     console.log("Matches fetched:", fetchedMatches.length);
     console.log("Selected matches:", selectedMatchCount);
-
-    console.log(
-        "Total matches stored:",
-        Object.keys(finalMatches).length
-    );
-
+    console.log("Total matches stored:", Object.keys(finalMatches).length);
     console.log("Competition matchCount saved:", true);
-    console.log("Sports node preserved:", true);
+    console.log("Sports updated from API:", Boolean(builtSports));
+    console.log("Sports stored:", Object.keys(newSports).length);
     console.log("Sports Hub sync completed.");
     console.log("==================================");
 }
