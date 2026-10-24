@@ -1,4 +1,3 @@
-
 "use strict";
 
 const admin = require("firebase-admin");
@@ -11,8 +10,11 @@ const FETCH_DATES = [-1, 0, 1];
 function initializeFirebase() {
     if (admin.apps.length) return;
 
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-    const databaseURL = process.env.FIREBASE_DATABASE_URL;
+    const serviceAccountJson =
+        process.env.FIREBASE_SERVICE_ACCOUNT;
+
+    const databaseURL =
+        process.env.FIREBASE_DATABASE_URL;
 
     if (!serviceAccountJson || !databaseURL) {
         throw new Error("Firebase secrets are missing.");
@@ -49,14 +51,20 @@ function normalizeProviderName(value) {
     throw new Error("Unsupported API provider: " + name);
 }
 
+/*
+ * Firebase Settings-ലെ selected_parser-ന് മുൻഗണന.
+ * GitHub Actions-ലെ API_PROVIDER മാറ്റാതെ വെച്ചാൽ
+ * provider മാറാത്ത പ്രശ്നം ഒഴിവാക്കാൻ അത് ഉപയോഗിക്കുന്നില്ല.
+ */
 function getProviderName(settings) {
     const parserName = settings.selected_parser;
-    const parser = settings.parse && settings.parse[parserName];
+    const parser =
+        settings.parse && settings.parse[parserName];
 
     const configuredName =
-        process.env.API_PROVIDER ||
-        (parser && parser.api_parser) ||
-        DEFAULT_PROVIDER;
+        parser && parser.api_parser
+            ? parser.api_parser
+            : DEFAULT_PROVIDER;
 
     return normalizeProviderName(configuredName);
 }
@@ -87,16 +95,20 @@ function getDate(offset) {
 }
 
 function normalizeGameId(match) {
-    if (!match || typeof match !== "object") return null;
+    if (!match || typeof match !== "object") {
+        return null;
+    }
 
     const id =
         match.gameId != null ? match.gameId :
         match.apiFixtureId != null ? match.apiFixtureId :
         match.id != null ? match.id : null;
 
-    return id == null || String(id).trim() === ""
-        ? null
-        : String(id);
+    if (id == null || String(id).trim() === "") {
+        return null;
+    }
+
+    return String(id);
 }
 
 function normalizeMatch(match) {
@@ -125,6 +137,7 @@ function mergeMatches(matches) {
 
     matches.forEach(function (item) {
         const match = normalizeMatch(item);
+
         if (!match) return;
 
         const id = String(match.gameId);
@@ -154,15 +167,20 @@ function getSelectedSports(settings) {
     const configured = settings.selected_sports;
     const ids = [];
 
-    if (configured && typeof configured === "object" &&
-        !Array.isArray(configured)) {
-
+    if (
+        configured &&
+        typeof configured === "object" &&
+        !Array.isArray(configured)
+    ) {
         Object.keys(configured).forEach(function (key) {
             const id = Number(key);
 
-            if (configured[key] === true &&
-                Number.isFinite(id) && id > 0 &&
-                ids.indexOf(id) === -1) {
+            if (
+                configured[key] === true &&
+                Number.isFinite(id) &&
+                id > 0 &&
+                ids.indexOf(id) === -1
+            ) {
                 ids.push(id);
             }
         });
@@ -171,14 +189,21 @@ function getSelectedSports(settings) {
     if (Array.isArray(configured)) {
         configured.forEach(function (value, index) {
             if (typeof value === "boolean") {
-                if (value && index > 0 && ids.indexOf(index) === -1) {
+                if (
+                    value &&
+                    index > 0 &&
+                    ids.indexOf(index) === -1
+                ) {
                     ids.push(index);
                 }
             } else {
                 const id = Number(value);
 
-                if (Number.isFinite(id) && id > 0 &&
-                    ids.indexOf(id) === -1) {
+                if (
+                    Number.isFinite(id) &&
+                    id > 0 &&
+                    ids.indexOf(id) === -1
+                ) {
                     ids.push(id);
                 }
             }
@@ -205,11 +230,14 @@ async function fetchProviderMatches(
     });
 
     const fetched = [];
-    let sportIds = [];
 
     if (providerName === "365scores") {
-        sportIds = getSelectedSports(settings);
-        console.log("Selected sports:", sportIds.join(", "));
+        const sportIds = getSelectedSports(settings);
+
+        console.log(
+            "Selected sports:",
+            sportIds.join(", ")
+        );
     }
 
     console.log("Dates to fetch:", dates.join(", "));
@@ -222,7 +250,7 @@ async function fetchProviderMatches(
         };
 
         if (providerName === "365scores") {
-            options.sportIds = sportIds;
+            options.sportIds = getSelectedSports(settings);
         }
 
         let results;
@@ -244,7 +272,8 @@ async function fetchProviderMatches(
         }
 
         console.log(
-            "Fetched " + results.length + " matches for " + date
+            "Fetched " + results.length +
+            " matches for " + date
         );
 
         fetched.push.apply(fetched, results);
@@ -267,7 +296,10 @@ function getOldMatchMap(root) {
         if (!result[id]) result[id] = {};
 
         Object.keys(match).forEach(function (field) {
-            if (isEmpty(result[id][field]) && !isEmpty(match[field])) {
+            if (
+                isEmpty(result[id][field]) &&
+                !isEmpty(match[field])
+            ) {
                 result[id][field] = match[field];
             }
         });
@@ -286,7 +318,10 @@ function preserveOldMatchData(match, old, providerChanged) {
         "stadium",
         "goalEvents"
     ].forEach(function (field) {
-        if (isEmpty(match[field]) && !isEmpty(old[field])) {
+        if (
+            isEmpty(match[field]) &&
+            !isEmpty(old[field])
+        ) {
             match[field] = old[field];
         }
     });
@@ -318,6 +353,7 @@ function getPreviousProvider(settings) {
             "Unrecognized previous provider:",
             value
         );
+
         return null;
     }
 }
@@ -327,18 +363,20 @@ async function main() {
 
     const db = admin.database();
     const rootRef = db.ref("/");
+
     const snapshot = await rootRef.once("value");
     const root = snapshot.val() || {};
     const settings = root.settings || {};
 
-    const providerName = getProviderName(settings);
     const selectedParser = settings.selected_parser;
 
     const parserSettings =
-        settings.parse && settings.parse[selectedParser]
+        settings.parse &&
+        settings.parse[selectedParser]
             ? settings.parse[selectedParser]
             : {};
 
+    const providerName = getProviderName(settings);
     const oldProvider = getPreviousProvider(settings);
 
     const hasExistingData =
@@ -346,30 +384,35 @@ async function main() {
         Object.keys(root.competitions || {}).length > 0 ||
         Object.keys(root.competition_selection || {}).length > 0;
 
-    /*
-     * If the previous provider is unknown but old data exists,
-     * treat it as a provider change to avoid mixing data.
-     */
     const providerChanged = oldProvider
         ? oldProvider !== providerName
         : hasExistingData;
 
+    console.log("Selected parser:", selectedParser);
     console.log("Current provider:", providerName);
-    console.log("Previous provider:", oldProvider || "not recorded");
+    console.log(
+        "Previous provider:",
+        oldProvider || "not recorded"
+    );
     console.log("Provider changed:", providerChanged);
 
     const provider = require(
         path.join(__dirname, "apis", providerName + ".js")
     );
 
-    if (!provider ||
-        typeof provider.fetchMatches !== "function") {
+    if (
+        !provider ||
+        typeof provider.fetchMatches !== "function"
+    ) {
         throw new Error(
             "Provider must export fetchMatches(options): " +
             providerName
         );
     }
 
+    /*
+     * API fetch വിജയിച്ചശേഷം മാത്രമേ Firebase data മാറ്റൂ.
+     */
     const newMatches = await fetchProviderMatches(
         provider,
         providerName,
@@ -377,15 +420,17 @@ async function main() {
         parserSettings
     );
 
-    /*
-     * Never delete Firebase data if the API returned no valid matches.
-     */
     if (newMatches.length === 0) {
         throw new Error(
-            "No valid matches fetched. Existing Firebase data was not changed."
+            "No valid matches fetched. " +
+            "Existing Firebase data was not changed."
         );
     }
 
+    /*
+     * Provider മാറിയാൽ പഴയ competitions, selections,
+     * matches എന്നിവ പുനരുപയോഗിക്കരുത്.
+     */
     const oldMatchMap = providerChanged
         ? {}
         : getOldMatchMap(root);
@@ -417,6 +462,7 @@ async function main() {
                 "Skipping match without competition ID:",
                 id
             );
+
             return;
         }
 
@@ -425,18 +471,25 @@ async function main() {
                 id: isNaN(Number(competitionId))
                     ? competitionId
                     : Number(competitionId),
-                name: match.competitionName ||
+
+                name:
+                    match.competitionName ||
                     match.league ||
                     "Unknown Competition",
+
                 selected: false,
                 sportId: Number(match.sportId || 1)
             };
         } else {
             const competition = competitions[competitionId];
 
-            if (match.competitionName &&
-                (!competition.name ||
-                 competition.name === "Unknown Competition")) {
+            if (
+                match.competitionName &&
+                (
+                    !competition.name ||
+                    competition.name === "Unknown Competition"
+                )
+            ) {
                 competition.name = match.competitionName;
             }
 
@@ -445,7 +498,8 @@ async function main() {
             }
 
             if (competition.sportId == null) {
-                competition.sportId = Number(match.sportId || 1);
+                competition.sportId =
+                    Number(match.sportId || 1);
             }
         }
 
@@ -469,43 +523,44 @@ async function main() {
     });
 
     /*
-     * On provider change, save the new competition list and clear
-     * old matches/selections. Admin can select new competitions,
-     * then run sync again to populate those matches.
+     * API മാറിയാൽ പുതിയ competition list മാത്രം save ചെയ്യുക.
+     * പുതിയ competitions എല്ലാം ആദ്യം unselected ആയിരിക്കും.
      */
     if (providerChanged) {
-        const updates = {
+        await rootRef.update({
             matches: null,
             competitions: competitions,
             competition_selection: selection,
-            settings: updatedSettings,
-            availableMatches: null
-        };
-
-        await rootRef.update(updates);
+            availableMatches: null,
+            settings: updatedSettings
+        });
 
         console.log("--------------------------------");
-        console.log("Provider changed; old matches cleared.");
-        console.log("New competitions:", Object.keys(competitions).length);
-        console.log("All new competitions start unselected.");
-        console.log(
-            "Select competitions in Admin and run sync again."
-        );
+        console.log("PROVIDER CHANGE COMPLETED");
         console.log("Provider:", providerName);
+        console.log(
+            "New competitions:",
+            Object.keys(competitions).length
+        );
+        console.log("Old matches cleared.");
+        console.log("Old selections cleared.");
+        console.log(
+            "Select competitions in Admin, then sync again."
+        );
         console.log("--------------------------------");
 
         return;
     }
 
     /*
-     * Same provider: do not erase current matches if the selection
-     * produces no matches.
+     * അതേ API ആണെങ്കിൽ selection ഇല്ലാത്തതിനാൽ മാത്രം
+     * നിലവിലുള്ള matches delete ചെയ്യരുത്.
      */
     if (Object.keys(selectedMatches).length === 0) {
         throw new Error(
             "No selected-competition matches were produced. " +
             "Existing Firebase data was not changed. " +
-            "Check competition selections and API response."
+            "Check competition_selection IDs."
         );
     }
 
@@ -513,22 +568,32 @@ async function main() {
         matches: selectedMatches,
         competitions: competitions,
         competition_selection: selection,
-        settings: updatedSettings,
-        availableMatches: null
+        availableMatches: null,
+        settings: updatedSettings
     });
 
     console.log("--------------------------------");
     console.log("Firebase sync completed successfully.");
     console.log("Provider:", providerName);
-    console.log("Fetched unique matches:", newMatches.length);
-    console.log("Selected matches saved:", Object.keys(selectedMatches).length);
-    console.log("Competitions:", Object.keys(competitions).length);
+    console.log("Fetched matches:", newMatches.length);
+    console.log(
+        "Saved selected matches:",
+        Object.keys(selectedMatches).length
+    );
+    console.log(
+        "Competitions:",
+        Object.keys(competitions).length
+    );
     console.log("--------------------------------");
 }
 
 main()
     .catch(function (error) {
-        console.error("SYNC FAILED:", error.stack || error.message);
+        console.error(
+            "SYNC FAILED:",
+            error.stack || error.message
+        );
+
         process.exitCode = 1;
     })
     .finally(async function () {
