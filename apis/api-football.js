@@ -1,8 +1,16 @@
+
 "use strict";
 
 const axios = require("axios");
 
 const BASE_URL = "https://v3.football.api-sports.io";
+const TIME_ZONE = "Asia/Kolkata";
+
+// Events fetch ചെയ്യുമ്പോൾ ഒരേസമയം പരിമിതമായ requests മാത്രം.
+const EVENT_CONCURRENCY = 3;
+
+// അടുത്തിടെ നടന്ന മത്സരങ്ങൾക്ക് മാത്രം events fetch ചെയ്യും.
+const RECENT_MATCH_HOURS = 24;
 
 function getApiKey(settings) {
     settings = settings || {};
@@ -18,11 +26,12 @@ function getBaseUrl(parserSettings) {
 
     let url = String(
         parserSettings.api_url ||
-        "https://v3.football.api-sports.io"
+        BASE_URL
     ).replace(/\/+$/, "");
 
     url = url.replace(/\/fixtures$/i, "");
     url = url.replace(/\/leagues$/i, "");
+    url = url.replace(/\/events$/i, "");
 
     return url || BASE_URL;
 }
@@ -76,8 +85,58 @@ function numberOrZero(value) {
     return Number.isFinite(number) ? number : 0;
 }
 
+function normalizeEvents(events) {
+    if (!Array.isArray(events)) {
+        return [];
+    }
+
+    return events
+        .filter(function (event) {
+            if (!event) return false;
+
+            const type = String(event.type || "").toLowerCase();
+            const detail = String(event.detail || "").toLowerCase();
+
+            // Goal സംബന്ധമായ events മാത്രം.
+            return type === "goal" ||
+                detail.indexOf("goal") !== -1 ||
+                detail === "penalty" ||
+                detail === "own goal";
+        })
+        .map(function (event) {
+            const team = event.team || {};
+            const player = event.player || {};
+            const assist = event.assist || {};
+            const time = event.time || {};
+
+            let minute = "";
+
+            if (time.elapsed != null) {
+                minute = String(time.elapsed);
+
+                if (time.extra != null && Number(time.extra) > 0) {
+                    minute += "+" + String(time.extra);
+                }
+            }
+
+            return {
+                competitorId: numberOrZero(team.id),
+                gameTime: minute,
+                playerId: numberOrZero(player.id),
+                playerName: String(player.name || ""),
+                type: String(
+                    event.detail || event.type || "Goal"
+                ),
+                assistId: numberOrZero(assist.id),
+                assistName: String(assist.name || "")
+            };
+        });
+}
+
 function normalize(fixture) {
-    if (!fixture || !fixture.fixture || fixture.fixture.id == null) {
+    if (!fixture ||
+            !fixture.fixture ||
+            fixture.fixture.id == null) {
         return null;
     }
 
@@ -93,7 +152,9 @@ function normalize(fixture) {
     const status = statusInfo.short || "NS";
     const elapsed = statusInfo.elapsed;
 
-    const liveStatuses = ["1H", "2H", "HT", "ET", "BT", "P", "LIVE"];
+    const liveStatuses = [
+        "1H", "2H", "HT", "ET", "BT", "P", "LIVE"
+    ];
 
     const displayStatus =
         elapsed != null && liveStatuses.indexOf(status) !== -1
@@ -139,9 +200,7 @@ function normalize(fixture) {
         penaltyHomeScore: penalty.home,
         penaltyAwayScore: penalty.away,
 
-        goalEvents: Array.isArray(fixture.goalEvents)
-            ? fixture.goalEvents
-            : [],
+        goalEvents: normalizeEvents(fixture.goalEvents),
 
         timestamp: timestamp,
         matchTimeMillis: timestamp,
@@ -151,7 +210,6 @@ function normalize(fixture) {
         venue: venue.name || "",
         stadium: venue.name || "",
         venueCity: venue.city || "",
-
         streamUrl: ""
     };
 }
@@ -199,6 +257,85 @@ async function fetchCatalog(options) {
     };
 }
 
+/*
+ * Match live ആണോ അല്ലെങ്കിൽ അടുത്തിടെ
+ * പൂർത്തിയായതാണോ എന്ന് പരിശോധിക്കുന്നു.
+ */
+function shouldFetchEvents(match) {
+    if (!match) return false;
+
+    const status = String(match.shortStatus || "").toUpperCase();
+
+    const liveStatuses = [
+        "1H", "2H", "HT", "ET", "BT", "P", "LIVE"
+    ];
+
+    if (liveStatuses.indexOf(status) !== -1) {
+        return true;
+    }
+
+    const finishedStatuses = ["FT", "AET", "PEN"];
+
+    if (finishedStatuses.indexOf(status) === -1) {
+        return false;
+    }
+
+    const matchTime = Number(match.matchTimeMillis || 0);
+
+    if (!matchTime) return false;
+
+    const age = Date.now() - matchTime;
+    const recentWindow = RECENT_MATCH_HOURS * 60 * 60 * 1000;
+
+    return age >= 0 && age <= recentWindow;
+}
+
+/*
+ * API-Football fixtures/events endpoint.
+ */
+async function fetchGoalEvents(
+    fixtureId,
+    settings,
+    parserSettings
+) {
+    const response = await apiGet(
+        "/fixtures/events",
+        { fixture: fixtureId },
+        settings,
+        parserSettings
+    );
+
+    return normalizeEvents(response);
+}
+
+/*
+ * Requests limit കുറയ്ക്കാൻ event requests
+ * നിയന്ത്രിത concurrency-ൽ പ്രവർത്തിക്കുന്നു.
+ */
+async function processWithLimit(items, limit, callback) {
+    let nextIndex = 0;
+
+    async function worker() {
+        while (true) {
+            const index = nextIndex++;
+
+            if (index >= items.length) {
+                return;
+            }
+
+            await callback(items[index]);
+        }
+    }
+
+    const workers = [];
+
+    for (let i = 0; i < Math.min(limit, items.length); i++) {
+        workers.push(worker());
+    }
+
+    await Promise.all(workers);
+}
+
 async function fetchMatches(options) {
     options = options || {};
 
@@ -214,7 +351,7 @@ async function fetchMatches(options) {
         "/fixtures",
         {
             date: date,
-            timezone: options.timeZone || "Asia/Kolkata"
+            timezone: options.timeZone || TIME_ZONE
         },
         settings,
         parserSettings
@@ -234,8 +371,43 @@ async function fetchMatches(options) {
         return unique[id];
     });
 
+    const eligibleMatches = matches.filter(shouldFetchEvents);
+
     console.log(
-        "API-Football " + date + ": " + matches.length + " fixtures"
+        "API-Football " + date + ": " +
+        matches.length + " fixtures"
+    );
+
+    console.log(
+        "Goal events requested for " +
+        eligibleMatches.length + " live/recent matches"
+    );
+
+    await processWithLimit(
+        eligibleMatches,
+        EVENT_CONCURRENCY,
+        async function (match) {
+            try {
+                match.goalEvents = await fetchGoalEvents(
+                    match.gameId,
+                    settings,
+                    parserSettings
+                );
+
+                console.log(
+                    "Events loaded for fixture " +
+                    match.gameId + ": " +
+                    match.goalEvents.length
+                );
+            } catch (error) {
+                // Event request പരാജയപ്പെട്ടാൽ match sync നിർത്തരുത്.
+                console.warn(
+                    "Could not fetch events for fixture " +
+                    match.gameId + ": " +
+                    error.message
+                );
+            }
+        }
     );
 
     return matches;
