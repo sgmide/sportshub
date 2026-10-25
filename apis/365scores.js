@@ -1,199 +1,47 @@
 
 "use strict";
 
-const axios = require("axios");
+var axios = require("axios");
 
-const BASE_URL = "https://webws.365scores.com/web/games/";
-const CATALOG_URL = "https://webws.365scores.com/web/sports/";
-const GAME_URL = "https://webws.365scores.com/web/game/";
+var BASE_URL = "https://webws.365scores.com/web/games/";
+var CATALOG_URL = "https://webws.365scores.com/web/sports/";
+var GAME_URL = "https://webws.365scores.com/web/game/";
 
-const TIME_ZONE = "Asia/Kolkata";
-const PROVIDER_NAME = "365scores";
+var TIME_ZONE = "Asia/Kolkata";
+var PROVIDER_NAME = "365scores";
 
-/*
- * Common API parameters
- */
-function getParams(extra) {
-    return Object.assign({
-        appTypeId: 5,
-        langId: 1,
-        timezoneName: TIME_ZONE,
-        userCountryId: 113,
-        withTop: true,
-        onlyMajorGames: false
-    }, extra || {});
-}
-
-/*
- * Safe number conversion
- */
-function toNumber(value, fallback) {
-    if (
-        value === undefined ||
-        value === null ||
-        value === "" ||
-        typeof value === "object"
-    ) {
-        return fallback === undefined ? 0 : fallback;
+function toNumber(value) {
+    if (value === null || value === undefined || value === "") {
+        return 0;
     }
 
-    const result = Number(value);
+    var number = Number(value);
 
-    return Number.isFinite(result)
-        ? result
-        : (fallback === undefined ? 0 : fallback);
+    return isNaN(number) ? 0 : number;
 }
 
-/*
- * Safe string conversion
- */
 function toStringValue(value) {
-    if (value === undefined || value === null) {
+    if (value === null || value === undefined) {
         return "";
     }
 
-    if (typeof value === "object") {
-        return "";
+    return String(value);
+}
+
+function firstValue() {
+    for (var i = 0; i < arguments.length; i++) {
+        if (
+            arguments[i] !== null &&
+            arguments[i] !== undefined &&
+            arguments[i] !== ""
+        ) {
+            return arguments[i];
+        }
     }
 
-    return String(value).trim();
+    return "";
 }
 
-/*
- * Convert to valid Date
- */
-function parseDate(value) {
-    if (!value) {
-        return null;
-    }
-
-    const parsed = value instanceof Date
-        ? value
-        : new Date(value);
-
-    return Number.isFinite(parsed.getTime())
-        ? parsed
-        : null;
-}
-
-/*
- * Format date: DD-MM-YYYY
- */
-function getFirebaseDate(value) {
-    const date = parseDate(value);
-
-    if (!date) {
-        return "";
-    }
-
-    const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: TIME_ZONE,
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric"
-    }).formatToParts(date);
-
-    const values = {};
-
-    parts.forEach(function (part) {
-        values[part.type] = part.value;
-    });
-
-    return values.day + "-" +
-        values.month + "-" +
-        values.year;
-}
-
-/*
- * Format time using India time zone
- */
-function getFirebaseTime(value) {
-    const date = parseDate(value);
-
-    if (!date) {
-        return "";
-    }
-
-    return new Intl.DateTimeFormat("en-US", {
-        timeZone: TIME_ZONE,
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: true
-    }).format(date);
-}
-
-/*
- * Timestamp in milliseconds
- */
-function getTimestamp(value) {
-    const date = parseDate(value);
-
-    return date ? date.getTime() : 0;
-}
-
-/*
- * Extract game start time
- */
-function getStartTime(game) {
-    return game.startTime ||
-        game.startDate ||
-        game.date ||
-        game.start_time ||
-        "";
-}
-
-/*
- * Extract competitor
- */
-function getCompetitor(game, side) {
-    const key = side === "home"
-        ? "homeCompetitor"
-        : "awayCompetitor";
-
-    const competitor = game[key];
-
-    return competitor && typeof competitor === "object"
-        ? competitor
-        : {};
-}
-
-/*
- * Competitor logo
- */
-function getCompetitorLogo(competitor) {
-    if (
-        !competitor ||
-        competitor.id === undefined ||
-        competitor.id === null
-    ) {
-        return "";
-    }
-
-    return "https://imagecache.365scores.com/image/upload/" +
-        "f_auto,w_120,h_120,c_limit,q_auto:eco/v2/competitors/" +
-        encodeURIComponent(String(competitor.id));
-}
-
-/*
- * Score formatter
- */
-function getScore(home, away) {
-    if (
-        home.score === undefined ||
-        home.score === null ||
-        away.score === undefined ||
-        away.score === null
-    ) {
-        return "";
-    }
-
-    return String(home.score) + " - " +
-        String(away.score);
-}
-
-/*
- * Normalize goal events
- */
 function normalizeGoalEvents(events) {
     if (!Array.isArray(events)) {
         return [];
@@ -202,465 +50,525 @@ function normalizeGoalEvents(events) {
     return events.map(function (event) {
         event = event || {};
 
+        var player = event.player || {};
+        var assist = event.assist || {};
+        var competitor = event.competitor || {};
+
         return {
-            competitorId: toNumber(event.competitorId),
-            gameTime: toStringValue(event.gameTime),
-            playerId: toNumber(event.playerId),
-            playerName: toStringValue(event.playerName),
-            type: toStringValue(event.type)
+            competitorId: toNumber(
+                firstValue(
+                    event.competitorId,
+                    competitor.id,
+                    event.teamId
+                )
+            ),
+
+            gameTime: toStringValue(
+                firstValue(
+                    event.gameTime,
+                    event.minute,
+                    event.time
+                )
+            ),
+
+            playerId: toNumber(
+                firstValue(
+                    event.playerId,
+                    player.id,
+                    event.scorerId
+                )
+            ),
+
+            playerName: toStringValue(
+                firstValue(
+                    event.playerName,
+                    player.name,
+                    event.scorerName
+                )
+            ),
+
+            type: toStringValue(
+                firstValue(
+                    event.type,
+                    event.eventType,
+                    event.detail
+                )
+            ),
+
+            assistId: toNumber(
+                firstValue(
+                    event.assistId,
+                    assist.id,
+                    event.assistPlayerId
+                )
+            ),
+
+            assistName: toStringValue(
+                firstValue(
+                    event.assistName,
+                    assist.name,
+                    event.assistPlayerName
+                )
+            )
         };
     });
 }
 
-/*
- * Extract competition ID
- */
-function getCompetitionId(game) {
-    const competition = game.competition || {};
-    const league = game.league || {};
+function normalizeSport(sport) {
+    sport = sport || {};
 
-    return toNumber(
-        game.competitionId ||
-        game.competition_id ||
-        game.competitionID ||
-        game.leagueId ||
-        game.league_id ||
-        competition.id ||
-        league.id
-    );
+    return {
+        id: toNumber(
+            firstValue(sport.id, sport.sportId)
+        ),
+
+        name: toStringValue(
+            firstValue(sport.name, sport.sportName)
+        ),
+
+        logo: toStringValue(
+            firstValue(sport.logo, sport.image)
+        )
+    };
 }
 
-/*
- * Extract competition name
- */
-function getCompetitionName(game) {
-    const competition = game.competition || {};
-    const league = game.league || {};
+function normalizeCompetition(competition) {
+    competition = competition || {};
 
-    return toStringValue(
-        game.competitionDisplayName ||
-        game.competitionName ||
-        game.leagueName ||
-        game.league_name ||
-        competition.name ||
-        league.name ||
-        (typeof game.league === "string"
-            ? game.league
-            : "")
-    );
-}
-
-/*
- * Extract sport ID
- */
-function getSportId(game) {
-    const sport = game.sport;
-
-    return toNumber(
-        game.sportId ||
-        game.sport_id ||
-        (sport && typeof sport === "object"
-            ? sport.id
-            : sport)
-    );
-}
-
-/*
- * Extract status text
- */
-function getStatusText(game) {
-    const status = game.status;
-
-    if (
-        typeof status === "string" ||
-        typeof status === "number"
-    ) {
-        return toStringValue(
-            game.statusText ||
-            game.shortStatusText ||
-            status
-        );
-    }
-
-    return toStringValue(
-        game.statusText ||
-        game.shortStatusText ||
-        (
-            status && (
-                status.shortName ||
-                status.name ||
-                status.text
+    return {
+        id: toNumber(
+            firstValue(
+                competition.id,
+                competition.competitionId
             )
-        ) ||
-        ""
-    );
+        ),
+
+        name: toStringValue(
+            firstValue(
+                competition.name,
+                competition.competitionName
+            )
+        ),
+
+        country: toStringValue(
+            firstValue(
+                competition.country,
+                competition.countryName
+            )
+        ),
+
+        logo: toStringValue(
+            firstValue(
+                competition.logo,
+                competition.image
+            )
+        )
+    };
 }
 
-/*
- * Normalize one match
- */
 function normalizeMatch(game) {
     game = game || {};
 
-    const home = getCompetitor(game, "home");
-    const away = getCompetitor(game, "away");
+    var home = game.homeCompetitor || {};
+    var away = game.awayCompetitor || {};
 
-    const gameId = toStringValue(
-        game.id ||
-        game.gameId ||
-        game.fixtureId
+    var competition = game.competition || {};
+    var sport = game.sport || {};
+
+    var homeScore = firstValue(
+        game.homeScore,
+        game.homeCompetitorScore,
+        home.score
     );
 
-    const startTime = getStartTime(game);
-    const timestamp = getTimestamp(startTime);
-
-    const competitionId = getCompetitionId(game);
-    const competitionName = getCompetitionName(game);
-    const sportId = getSportId(game);
-    const status = getStatusText(game);
-
-    return {
-        gameId: gameId,
-        apiFixtureId: gameId,
-        apiProvider: PROVIDER_NAME,
-
-        sportId: sportId,
-        competitionId: competitionId,
-        competitionName: competitionName,
-
-        home: toStringValue(home.name),
-        away: toStringValue(away.name),
-
-        homeCompetitorId: toNumber(home.id),
-        awayCompetitorId: toNumber(away.id),
-
-        homeLogo: getCompetitorLogo(home),
-        awayLogo: getCompetitorLogo(away),
-
-        league: competitionName,
-
-        date: getFirebaseDate(startTime),
-        time: getFirebaseTime(startTime),
-
-        timestamp: timestamp,
-        matchTimeMillis: timestamp,
-
-        score: getScore(home, away),
-
-        homeScore: home.score === undefined
-            ? null
-            : home.score,
-
-        awayScore: away.score === undefined
-            ? null
-            : away.score,
-
-        status: status,
-
-        shortStatus: toStringValue(
-            game.shortStatusText ||
-            game.statusShort ||
-            status
-        ),
-
-        round: toStringValue(game.roundName),
-        stage: toStringValue(game.stageName),
-        seasonNum: toNumber(game.seasonNum),
-
-        stadium: toStringValue(
-            game.venueName ||
-            game.stadiumName ||
-            ""
-        ),
-
-        goalEvents: normalizeGoalEvents(game.goalEvents),
-
-        /*
-         * index.js should preserve the existing streamUrl
-         * when updating a match from the same provider.
-         */
-        streamUrl: ""
-    };
-}
-
-/*
- * Normalize competition catalog item
- */
-function normalizeCompetition(item) {
-    item = item || {};
-
-    const competitionId = toNumber(
-        item.id ||
-        item.competitionId ||
-        item.competition_id ||
-        item.leagueId ||
-        item.league_id
+    var awayScore = firstValue(
+        game.awayScore,
+        game.awayCompetitorScore,
+        away.score
     );
 
-    return {
-        id: competitionId,
-        competitionId: competitionId,
+    var gameDate = firstValue(
+        game.startTime,
+        game.startDate,
+        game.date,
+        game.gameTime
+    );
+
+    var status = firstValue(
+        game.statusText,
+        game.status,
+        game.gameStatus
+    );
+
+    var match = {
+        gameId: toNumber(
+            firstValue(
+                game.id,
+                game.gameId,
+                game.eventId
+            )
+        ),
 
         sportId: toNumber(
-            item.sportId ||
-            item.sport_id ||
-            (item.sport && item.sport.id)
+            firstValue(
+                game.sportId,
+                sport.id
+            )
         ),
 
-        countryId: toNumber(
-            item.countryId ||
-            item.country_id
+        sportName: toStringValue(
+            firstValue(
+                game.sportName,
+                sport.name
+            )
         ),
 
-        name: toStringValue(
-            item.name ||
-            item.competitionDisplayName ||
-            item.longName ||
-            item.competitionName ||
-            ""
+        competitionId: toNumber(
+            firstValue(
+                game.competitionId,
+                competition.id
+            )
         ),
 
-        nameForURL: toStringValue(item.nameForURL),
-
-        mainCompetitionId: toNumber(
-            item.mainCompetitionId
+        competition: toStringValue(
+            firstValue(
+                game.competitionName,
+                competition.name
+            )
         ),
 
-        hideOnCatalog: item.hideOnCatalog === true,
-        hideOnSearch: item.hideOnSearch === true,
-        isInternational: item.isInternational === true,
-        hasActiveGames: item.hasActiveGames === true,
-
-        totalGames: toNumber(item.totalGames),
-        liveGames: toNumber(item.liveGames),
-
-        currentSeasonNum: toNumber(
-            item.currentSeasonNum
+        country: toStringValue(
+            firstValue(
+                game.countryName,
+                game.country,
+                competition.countryName
+            )
         ),
 
-        currentStageNum: toNumber(
-            item.currentStageNum
+        season: toStringValue(game.season),
+
+        homeTeam: toStringValue(
+            firstValue(
+                game.homeCompetitorName,
+                home.name,
+                game.homeTeam
+            )
         ),
 
-        provider: PROVIDER_NAME
+        awayTeam: toStringValue(
+            firstValue(
+                game.awayCompetitorName,
+                away.name,
+                game.awayTeam
+            )
+        ),
+
+        homeTeamId: toNumber(
+            firstValue(
+                game.homeCompetitorId,
+                home.id
+            )
+        ),
+
+        awayTeamId: toNumber(
+            firstValue(
+                game.awayCompetitorId,
+                away.id
+            )
+        ),
+
+        homeLogo: toStringValue(
+            firstValue(
+                game.homeCompetitorLogo,
+                home.logo,
+                home.image
+            )
+        ),
+
+        awayLogo: toStringValue(
+            firstValue(
+                game.awayCompetitorLogo,
+                away.logo,
+                away.image
+            )
+        ),
+
+        homeScore: homeScore === "" ? "" : toNumber(homeScore),
+
+        awayScore: awayScore === "" ? "" : toNumber(awayScore),
+
+        timestamp: toNumber(
+            firstValue(
+                game.startTimeSeconds,
+                game.timestamp,
+                game.startTimestamp
+            )
+        ),
+
+        matchTimeMillis: toNumber(
+            firstValue(
+                game.startTimeMillis,
+                game.matchTimeMillis
+            )
+        ),
+
+        matchDate: toStringValue(gameDate),
+
+        status: toStringValue(status),
+
+        shortStatus: toStringValue(
+            firstValue(
+                game.statusGroup,
+                game.shortStatus,
+                game.statusCode
+            )
+        ),
+
+        stadium: toStringValue(
+            firstValue(
+                game.venueName,
+                game.stadiumName,
+                game.venue
+            )
+        ),
+
+        goalEvents: normalizeGoalEvents(
+            firstValue(
+                game.goalEvents,
+                game.events,
+                []
+            )
+        ),
+
+        streamUrl: ""
     };
+
+    if (!match.timestamp && match.matchDate) {
+        var parsedDate = Date.parse(match.matchDate);
+
+        if (!isNaN(parsedDate)) {
+            match.timestamp = Math.floor(parsedDate / 1000);
+            match.matchTimeMillis = parsedDate;
+        }
+    }
+
+    if (!match.matchTimeMillis && match.timestamp) {
+        match.matchTimeMillis = match.timestamp * 1000;
+    }
+
+    return match;
 }
 
-/*
- * Normalize sport catalog item
- */
-function normalizeSport(item) {
-    item = item || {};
+function getResponseData(response) {
+    if (
+        response &&
+        response.data &&
+        typeof response.data === "object"
+    ) {
+        return response.data;
+    }
 
-    const sportId = toNumber(
-        item.id ||
-        item.sportId ||
-        item.sport_id
+    return {};
+}
+
+async function fetchCatalog() {
+    var response = await axios.get(CATALOG_URL, {
+        params: {
+            appTypeId: 5,
+            langId: 1,
+            timezoneName: TIME_ZONE
+        },
+        timeout: 30000
+    });
+
+    var data = getResponseData(response);
+
+    var sports = Array.isArray(data.sports)
+        ? data.sports
+        : [];
+
+    var countries = Array.isArray(data.countries)
+        ? data.countries
+        : [];
+
+    var competitions = Array.isArray(data.competitions)
+        ? data.competitions
+        : [];
+
+    var liveGamesCount = toNumber(
+        firstValue(
+            data.liveGamesCount,
+            data.liveGames,
+            0
+        )
     );
 
     return {
-        id: sportId,
-        sportId: sportId,
+        provider: PROVIDER_NAME,
 
-        name: toStringValue(
-            item.name ||
-            item.sportName ||
-            ""
-        ),
+        sports: sports.map(normalizeSport),
 
-        nameForURL: toStringValue(item.nameForURL),
+        countries: countries,
 
-        drawSupport: item.drawSupport === true,
+        competitions: competitions.map(normalizeCompetition),
 
-        totalGames: toNumber(item.totalGames),
-        liveGames: toNumber(item.liveGames),
-
-        imageVersion: toNumber(item.imageVersion),
-
-        provider: PROVIDER_NAME
+        liveGamesCount: liveGamesCount
     };
 }
 
-/*
- * HTTP GET helper
- */
-async function request(url, params) {
-    const response = await axios.get(url, {
-        params: getParams(params),
-        timeout: 30000,
-        headers: {
-            Accept: "application/json",
-            "User-Agent": "Mozilla/5.0"
-        }
-    });
+function formatDate(date) {
+    var day = String(date.getDate());
+    var month = String(date.getMonth() + 1);
+    var year = String(date.getFullYear());
 
-    return response.data || {};
+    if (day.length < 2) {
+        day = "0" + day;
+    }
+
+    if (month.length < 2) {
+        month = "0" + month;
+    }
+
+    return day + "/" + month + "/" + year;
 }
 
-/*
- * Fetch sports and competition catalog.
- *
- * The /web/games/ response supplied by the user contains
- * sports[].totalGames and sports[].liveGames.
- */
-async function fetchCatalog(options) {
+function getDateRange(options) {
     options = options || {};
 
-    const data = await request(BASE_URL, {});
+    var startDate = options.startDate;
+    var endDate = options.endDate;
 
-    const sports = Array.isArray(data.sports)
-        ? data.sports.map(normalizeSport)
-        : [];
+    if (startDate && endDate) {
+        return {
+            startDate: startDate,
+            endDate: endDate
+        };
+    }
 
-    const competitions = Array.isArray(data.competitions)
-        ? data.competitions.map(normalizeCompetition)
-        : [];
+    var now = new Date();
 
-    console.log(
-        "365Scores catalog sports:",
-        sports.length
-    );
+    var start = new Date(now.getTime());
+    start.setDate(start.getDate() - 1);
 
-    console.log(
-        "365Scores catalog competitions:",
-        competitions.length
-    );
-
-    console.log(
-        "365Scores overall liveGamesCount:",
-        toNumber(data.liveGamesCount)
-    );
-
-    sports.forEach(function (sport) {
-        console.log(
-            "365Scores sport:",
-            sport.id,
-            sport.name,
-            "| totalGames:",
-            sport.totalGames,
-            "| liveGames:",
-            sport.liveGames
-        );
-    });
+    var end = new Date(now.getTime());
+    end.setDate(end.getDate() + 1);
 
     return {
-        sports: sports,
-        countries: Array.isArray(data.countries)
-            ? data.countries
-            : [],
-        competitions: competitions,
-        liveGamesCount: toNumber(data.liveGamesCount)
+        startDate: formatDate(start),
+        endDate: formatDate(end)
     };
 }
 
-/*
- * Fetch matches for selected sports and date range.
- *
- * Expected dates: DD/MM/YYYY.
- */
 async function fetchMatches(options) {
     options = options || {};
 
-    const sportIds = Array.isArray(options.sportIds)
+    var sportIds = Array.isArray(options.sportIds)
         ? options.sportIds
         : [];
 
-    const startDate = options.startDate;
-    const endDate = options.endDate;
-
     if (sportIds.length === 0) {
         throw new Error(
-            "No sports selected for 365Scores."
+            "365Scores: No sport IDs were provided."
         );
     }
 
-    if (!startDate || !endDate) {
-        throw new Error(
-            "startDate and endDate are required."
-        );
-    }
+    var range = getDateRange(options);
 
-    const allMatches = [];
-    const seen = {};
+    var allMatches = [];
+    var seen = {};
 
-    for (let i = 0; i < sportIds.length; i++) {
-        const sportId = toNumber(sportIds[i]);
+    for (var i = 0; i < sportIds.length; i++) {
+        var sportId = sportIds[i];
 
-        console.log(
-            "Fetching 365Scores games for sport:",
-            sportId
-        );
+        try {
+            var response = await axios.get(BASE_URL, {
+                params: {
+                    sports: sportId,
+                    startDate: range.startDate,
+                    endDate: range.endDate,
+                    showOdds: true,
+                    appTypeId: 5,
+                    langId: 1,
+                    timezoneName: TIME_ZONE
+                },
 
-        const data = await request(BASE_URL, {
-            sports: sportId,
-            startDate: startDate,
-            endDate: endDate,
-            showOdds: true
-        });
+                timeout: 30000
+            });
 
-        const games = Array.isArray(data.games)
-            ? data.games
-            : [];
+            var data = getResponseData(response);
 
-        console.log(
-            "Sport",
-            sportId,
-            "returned",
-            games.length,
-            "games"
-        );
+            var games = Array.isArray(data.games)
+                ? data.games
+                : [];
 
-        if (games.length > 0) {
-            console.log(
-                "Sample game fields:",
-                Object.keys(games[0]).join(", ")
+            for (var j = 0; j < games.length; j++) {
+                var normalized = normalizeMatch(games[j]);
+
+                if (!normalized.gameId) {
+                    continue;
+                }
+
+                var key = String(normalized.gameId);
+
+                if (seen[key]) {
+                    continue;
+                }
+
+                seen[key] = true;
+                allMatches.push(normalized);
+            }
+        } catch (error) {
+            console.error(
+                "365Scores fetch failed for sport " +
+                sportId +
+                ": " +
+                (error.message || error)
             );
         }
-
-        games.forEach(function (game) {
-            const match = normalizeMatch(game);
-
-            if (
-                !match.gameId ||
-                seen[match.gameId]
-            ) {
-                return;
-            }
-
-            seen[match.gameId] = true;
-            allMatches.push(match);
-        });
     }
 
     return allMatches;
 }
 
-/*
- * Fetch raw details for one game
- */
 async function fetchGameDetails(gameId) {
-    if (
-        gameId === undefined ||
-        gameId === null ||
-        String(gameId).trim() === ""
-    ) {
-        throw new Error("gameId is required.");
+    if (!gameId) {
+        throw new Error(
+            "365Scores: gameId is required."
+        );
     }
 
-    return await request(GAME_URL, {
-        gameId: String(gameId)
+    var response = await axios.get(GAME_URL, {
+        params: {
+            gameId: gameId,
+            appTypeId: 5,
+            langId: 1,
+            timezoneName: TIME_ZONE
+        },
+
+        timeout: 30000
     });
+
+    var data = getResponseData(response);
+
+    var game = data.game || data;
+
+    return normalizeMatch(game);
 }
 
-/*
- * Module exports
- */
 module.exports = {
     providerName: PROVIDER_NAME,
+
     fetchCatalog: fetchCatalog,
+
     fetchMatches: fetchMatches,
+
     fetchGameDetails: fetchGameDetails,
+
     normalizeMatch: normalizeMatch,
+
     normalizeSport: normalizeSport,
-    normalizeCompetition: normalizeCompetition
+
+    normalizeCompetition: normalizeCompetition,
+
+    normalizeGoalEvents: normalizeGoalEvents
 };
