@@ -202,12 +202,60 @@ function normalizeGoalEvents(events) {
     return events.map(function (event) {
         event = event || {};
 
+        const player = event.player || {};
+        const assist = event.assist || {};
+        const competitor = event.competitor || {};
+        const team = event.team || {};
+
         return {
-            competitorId: toNumber(event.competitorId),
-            gameTime: toStringValue(event.gameTime),
-            playerId: toNumber(event.playerId),
-            playerName: toStringValue(event.playerName),
-            type: toStringValue(event.type)
+            competitorId: toNumber(
+                event.competitorId ||
+                competitor.id ||
+                event.teamId ||
+                team.id
+            ),
+
+            gameTime: toStringValue(
+                event.gameTime ||
+                event.minute ||
+                event.time ||
+                event.elapsed ||
+                ""
+            ),
+
+            playerId: toNumber(
+                event.playerId ||
+                player.id ||
+                event.scorerId
+            ),
+
+            playerName: toStringValue(
+                event.playerName ||
+                player.name ||
+                event.scorerName ||
+                ""
+            ),
+
+            type: toStringValue(
+                event.type ||
+                event.eventType ||
+                event.detail ||
+                event.name ||
+                ""
+            ),
+
+            assistId: toNumber(
+                event.assistId ||
+                assist.id ||
+                event.assistPlayerId
+            ),
+
+            assistName: toStringValue(
+                event.assistName ||
+                assist.name ||
+                event.assistPlayerName ||
+                ""
+            )
         };
     });
 }
