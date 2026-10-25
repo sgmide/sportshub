@@ -450,6 +450,7 @@ function normalizeCatalog(catalog) {
  * Build Firebase sports from the API catalog.
  * Preserve fields not supplied by the API.
  */
+
 function buildSportsFromApi(apiSports, oldSports) {
     if (!Array.isArray(apiSports) || apiSports.length === 0) {
         return null;
@@ -462,46 +463,57 @@ function buildSportsFromApi(apiSports, oldSports) {
         const item = oldSports[key] || {};
         const id = toId(item.id || key);
 
-        if (id) oldById[id] = item;
+        if (id) {
+            oldById[id] = item;
+        }
     });
 
     apiSports.forEach(function (sport) {
         if (!sport) return;
 
         const id = toId(sport.id);
+        const name = toText(sport.name);
 
-        if (!id || !toText(sport.name)) return;
+        if (!id || !name) return;
 
         const old = oldById[id] || {};
         const key = id.padStart(2, "0");
 
         result[key] = {
             id: /^\d+$/.test(id) ? Number(id) : id,
-            name: toText(sport.name),
+
+            name: name,
+
             nameForURL: toText(
                 sport.nameForURL !== undefined
                     ? sport.nameForURL
                     : old.nameForURL
             ),
+
             totalGames: sport.totalGames !== undefined
                 ? toNumber(sport.totalGames)
                 : toNumber(old.totalGames),
+
             liveGames: sport.liveGames !== undefined
                 ? toNumber(sport.liveGames)
                 : toNumber(old.liveGames),
+
             imageVersion: sport.imageVersion !== undefined
                 ? sport.imageVersion
-                : (old.imageVersion !== undefined
-                    ? old.imageVersion
-                    : 1),
-            drawSupport: sport.drawSupport !== undefined
-                ? sport.drawSupport === true
-                : old.drawSupport === true
+                : (
+                    old.imageVersion !== undefined
+                        ? old.imageVersion
+                        : 1
+                ),
+
+            // Admin Firebase value മാത്രം നിലനിർത്തുക
+            drawSupport: old.drawSupport === true
         };
     });
 
     return Object.keys(result).length > 0 ? result : null;
 }
+
 
 /*
  * Fetch matches for yesterday, today and tomorrow.
