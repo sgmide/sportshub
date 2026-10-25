@@ -1,3 +1,4 @@
+
 "use strict";
 
 const admin = require("firebase-admin");
@@ -123,13 +124,7 @@ function getPreviousProvider(settings) {
 }
 
 /*
- * FIX:
- * Supports selected_sports as either an array or Firebase object/map.
- *
- * Supported examples:
- * ["1", "2"]
- * {"1": true, "2": false}
- * [{"id": 1, "selected": true}]
+ * Supports selected_sports as an array or Firebase object/map.
  */
 function getSelectedSports(settings) {
     const value = settings && settings.selected_sports;
@@ -139,10 +134,7 @@ function getSelectedSports(settings) {
         value.forEach(function (item, index) {
             if (item === true && index > 0) {
                 result.push(String(index));
-            } else if (
-                item &&
-                typeof item === "object"
-            ) {
+            } else if (item && typeof item === "object") {
                 if (
                     item.id !== undefined &&
                     item.selected !== false
@@ -241,6 +233,10 @@ function normalizeDate(value) {
     return text;
 }
 
+/*
+ * Normalize goal events.
+ * Supports scorer, minute, goal type and assist details.
+ */
 function normalizeGoalEvents(value) {
     let events = [];
 
@@ -260,7 +256,9 @@ function normalizeGoalEvents(value) {
             gameTime: toText(event.gameTime),
             playerId: toNumber(event.playerId),
             playerName: toText(event.playerName),
-            type: toText(event.type)
+            type: toText(event.type),
+            assistId: toNumber(event.assistId),
+            assistName: toText(event.assistName)
         };
     });
 }
@@ -324,35 +322,58 @@ function normalizeMatch(raw, oldMatch) {
 
     return {
         away: away,
+
         awayCompetitorId: toNumber(
             match.awayCompetitorId ||
             match.awayTeamId ||
             match.awayId
         ),
-        awayLogo: toText(match.awayLogo || match.awayTeamLogo),
+
+        awayLogo: toText(
+            match.awayLogo || match.awayTeamLogo
+        ),
+
         competitionId: toNumber(getCompetitionId(match)),
         date: normalizeDate(match.date),
+
         gameId: /^\d+$/.test(gameId) ? Number(gameId) : gameId,
+
         goalEvents: normalizeGoalEvents(match.goalEvents),
+
         home: home,
+
         homeCompetitorId: toNumber(
             match.homeCompetitorId ||
             match.homeTeamId ||
             match.homeId
         ),
-        homeLogo: toText(match.homeLogo || match.homeTeamLogo),
+
+        homeLogo: toText(
+            match.homeLogo || match.homeTeamLogo
+        ),
+
         league: getCompetitionName(match),
+
         matchTimeMillis: toNumber(
             match.matchTimeMillis || match.timestamp
         ),
+
         score: score,
+
         shortStatus: toText(
             match.shortStatus || match.status || "NS"
         ),
+
         sportId: getSportId(match),
+
         stadium: toText(match.stadium || match.venue),
-        status: toText(match.status || match.shortStatus || "NS"),
+
+        status: toText(
+            match.status || match.shortStatus || "NS"
+        ),
+
         streamUrl: newStreamUrl || oldStreamUrl,
+
         time: toText(match.time)
     };
 }
@@ -386,6 +407,7 @@ function normalizeCompetition(
 
     return {
         id: /^\d+$/.test(id) ? Number(id) : id,
+
         name: toText(
             raw.name ||
             raw.competitionName ||
@@ -393,8 +415,13 @@ function normalizeCompetition(
             raw.league ||
             id
         ),
+
         selected: selected,
-        sportId: toNumber(raw.sportId || raw.sport_id || 1),
+
+        sportId: toNumber(
+            raw.sportId || raw.sport_id || 1
+        ),
+
         matchCount: toNumber(matchCount)
     };
 }
@@ -450,7 +477,6 @@ function normalizeCatalog(catalog) {
  * Build Firebase sports from the API catalog.
  * Preserve fields not supplied by the API.
  */
-
 function buildSportsFromApi(apiSports, oldSports) {
     if (!Array.isArray(apiSports) || apiSports.length === 0) {
         return null;
@@ -506,14 +532,12 @@ function buildSportsFromApi(apiSports, oldSports) {
                         : 1
                 ),
 
-            // Admin Firebase value മാത്രം നിലനിർത്തുക
             drawSupport: old.drawSupport === true
         };
     });
 
     return Object.keys(result).length > 0 ? result : null;
 }
-
 
 /*
  * Fetch matches for yesterday, today and tomorrow.
@@ -522,7 +546,8 @@ async function fetchMatches(
     provider,
     providerName,
     parserSettings,
-    sports
+    sports,
+    settings
 ) {
     const allMatches = {};
     const errors = [];
@@ -536,7 +561,11 @@ async function fetchMatches(
             if (providerName === "api-football") {
                 result = await provider.fetchMatches({
                     date: date.iso,
-                    settings: {},
+
+                    // Pass Firebase settings so the provider can
+                    // use settings.apiFootballKey if configured.
+                    settings: settings,
+
                     parserSettings: parserSettings,
                     sportIds: sports,
                     timeZone: TIME_ZONE
@@ -598,7 +627,9 @@ async function fetchMatches(
     }
 
     if (Object.keys(allMatches).length === 0) {
-        fail("No matches fetched. Existing Firebase data was not updated.");
+        fail(
+            "No matches fetched. Existing Firebase data was not updated."
+        );
     }
 
     return Object.values(allMatches);
@@ -664,6 +695,7 @@ function logCompetitionMatchCounts(fetchedMatches, newSelection) {
     });
 
     console.log("Competitions with fetched matches:", ids.length);
+
     console.log(
         "Total counted matches:",
         ids.reduce(function (sum, id) {
@@ -727,7 +759,6 @@ async function main() {
 
     /*
      * Do not start a 365Scores sync if no sports are selected.
-     * This prevents a misleading empty match result.
      */
     if (providerName === "365scores" && selectedSports.length === 0) {
         fail(
@@ -775,7 +806,8 @@ async function main() {
         provider,
         providerName,
         parserSettings,
-        selectedSports
+        selectedSports,
+        settings
     );
 
     if (fetchedMatches.length === 0) {
@@ -890,6 +922,7 @@ async function main() {
         competitions: newCompetitions,
         competition_selection: newSelection,
         matches: finalMatches,
+
         "settings/last_api": toText(
             parserSettings.api_url || settings.last_api
         )
