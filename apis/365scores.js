@@ -10,13 +10,15 @@ var GAME_URL = "https://webws.365scores.com/web/game/";
 var TIME_ZONE = "Asia/Kolkata";
 var PROVIDER_NAME = "365scores";
 
+var competitionCache = {};
+var sportCache = {};
+
 function toNumber(value) {
     if (value === null || value === undefined || value === "") {
         return 0;
     }
 
     var number = Number(value);
-
     return isNaN(number) ? 0 : number;
 }
 
@@ -42,6 +44,114 @@ function firstValue() {
     return "";
 }
 
+function getResponseData(response) {
+    if (
+        response &&
+        response.data &&
+        typeof response.data === "object"
+    ) {
+        return response.data;
+    }
+
+    return {};
+}
+
+function getCompetitionId(item) {
+    item = item || {};
+
+    return toNumber(firstValue(
+        item.competitionId,
+        item.id,
+        item.competition && item.competition.id
+    ));
+}
+
+function getCompetitionName(item) {
+    item = item || {};
+
+    var competition = item.competition || {};
+    var tournament = item.tournament || {};
+    var league = item.league || {};
+
+    return toStringValue(firstValue(
+        item.competitionName,
+        item.competitionDisplayName,
+        competition.name,
+        competition.competitionName,
+        competition.shortName,
+        tournament.name,
+        tournament.competitionName,
+        league.name,
+        item.leagueName
+    ));
+}
+
+function addCompetitions(list) {
+    if (!Array.isArray(list)) {
+        return;
+    }
+
+    list.forEach(function (item) {
+        if (!item) {
+            return;
+        }
+
+        var id = getCompetitionId(item);
+        var name = getCompetitionName(item);
+
+        if (!id || !name) {
+            return;
+        }
+
+        competitionCache[String(id)] = {
+            id: id,
+            name: name,
+            country: toStringValue(firstValue(
+                item.countryName,
+                item.country
+            )),
+            logo: toStringValue(firstValue(
+                item.logo,
+                item.image,
+                item.competitionLogo
+            ))
+        };
+    });
+}
+
+function addSports(list) {
+    if (!Array.isArray(list)) {
+        return;
+    }
+
+    list.forEach(function (item) {
+        if (!item) {
+            return;
+        }
+
+        var id = toNumber(firstValue(
+            item.id,
+            item.sportId
+        ));
+
+        var name = toStringValue(firstValue(
+            item.name,
+            item.sportName
+        ));
+
+        if (id && name) {
+            sportCache[String(id)] = {
+                id: id,
+                name: name,
+                logo: toStringValue(firstValue(
+                    item.logo,
+                    item.image
+                ))
+            };
+        }
+    });
+}
+
 function normalizeGoalEvents(events) {
     if (!Array.isArray(events)) {
         return [];
@@ -53,63 +163,53 @@ function normalizeGoalEvents(events) {
         var player = event.player || {};
         var assist = event.assist || {};
         var competitor = event.competitor || {};
+        var team = event.team || {};
 
         return {
-            competitorId: toNumber(
-                firstValue(
-                    event.competitorId,
-                    competitor.id,
-                    event.teamId
-                )
-            ),
+            competitorId: toNumber(firstValue(
+                event.competitorId,
+                competitor.id,
+                event.teamId,
+                team.id
+            )),
 
-            gameTime: toStringValue(
-                firstValue(
-                    event.gameTime,
-                    event.minute,
-                    event.time
-                )
-            ),
+            gameTime: toStringValue(firstValue(
+                event.gameTime,
+                event.minute,
+                event.time,
+                event.elapsed
+            )),
 
-            playerId: toNumber(
-                firstValue(
-                    event.playerId,
-                    player.id,
-                    event.scorerId
-                )
-            ),
+            playerId: toNumber(firstValue(
+                event.playerId,
+                player.id,
+                event.scorerId
+            )),
 
-            playerName: toStringValue(
-                firstValue(
-                    event.playerName,
-                    player.name,
-                    event.scorerName
-                )
-            ),
+            playerName: toStringValue(firstValue(
+                event.playerName,
+                player.name,
+                event.scorerName
+            )),
 
-            type: toStringValue(
-                firstValue(
-                    event.type,
-                    event.eventType,
-                    event.detail
-                )
-            ),
+            type: toStringValue(firstValue(
+                event.type,
+                event.eventType,
+                event.detail,
+                event.name
+            )),
 
-            assistId: toNumber(
-                firstValue(
-                    event.assistId,
-                    assist.id,
-                    event.assistPlayerId
-                )
-            ),
+            assistId: toNumber(firstValue(
+                event.assistId,
+                assist.id,
+                event.assistPlayerId
+            )),
 
-            assistName: toStringValue(
-                firstValue(
-                    event.assistName,
-                    assist.name,
-                    event.assistPlayerName
-                )
-            )
+            assistName: toStringValue(firstValue(
+                event.assistName,
+                assist.name,
+                event.assistPlayerName
+            ))
         };
     });
 }
@@ -118,17 +218,20 @@ function normalizeSport(sport) {
     sport = sport || {};
 
     return {
-        id: toNumber(
-            firstValue(sport.id, sport.sportId)
-        ),
+        id: toNumber(firstValue(
+            sport.id,
+            sport.sportId
+        )),
 
-        name: toStringValue(
-            firstValue(sport.name, sport.sportName)
-        ),
+        name: toStringValue(firstValue(
+            sport.name,
+            sport.sportName
+        )),
 
-        logo: toStringValue(
-            firstValue(sport.logo, sport.image)
-        )
+        logo: toStringValue(firstValue(
+            sport.logo,
+            sport.image
+        ))
     };
 }
 
@@ -136,33 +239,84 @@ function normalizeCompetition(competition) {
     competition = competition || {};
 
     return {
-        id: toNumber(
-            firstValue(
-                competition.id,
-                competition.competitionId
-            )
-        ),
+        id: getCompetitionId(competition),
 
-        name: toStringValue(
-            firstValue(
-                competition.name,
-                competition.competitionName
-            )
-        ),
+        name: getCompetitionName(competition),
 
-        country: toStringValue(
-            firstValue(
-                competition.country,
-                competition.countryName
-            )
-        ),
+        country: toStringValue(firstValue(
+            competition.country,
+            competition.countryName
+        )),
 
-        logo: toStringValue(
-            firstValue(
-                competition.logo,
-                competition.image
-            )
-        )
+        logo: toStringValue(firstValue(
+            competition.logo,
+            competition.image,
+            competition.competitionLogo
+        ))
+    };
+}
+
+function findCompetition(game) {
+    game = game || {};
+
+    var id = getCompetitionId(game);
+    var name = getCompetitionName(game);
+
+    var nestedLists = [
+        game.competitions,
+        game.tournaments,
+        game.leagues
+    ];
+
+    for (var i = 0; i < nestedLists.length; i++) {
+        var list = nestedLists[i];
+
+        if (!Array.isArray(list)) {
+            continue;
+        }
+
+        for (var j = 0; j < list.length; j++) {
+            var item = list[j] || {};
+            var itemId = getCompetitionId(item);
+
+            if (!name && (!id || !itemId || itemId === id)) {
+                name = getCompetitionName(item);
+            }
+
+            if (!id && itemId && getCompetitionName(item)) {
+                id = itemId;
+                name = getCompetitionName(item);
+            }
+        }
+    }
+
+    var cached = id
+        ? competitionCache[String(id)]
+        : null;
+
+    if (!name && cached) {
+        name = cached.name;
+    }
+
+    var country = toStringValue(firstValue(
+        game.countryName,
+        game.country,
+        game.competition && game.competition.countryName,
+        cached && cached.country
+    ));
+
+    var logo = toStringValue(firstValue(
+        game.competitionLogo,
+        game.competitionImage,
+        game.competition && game.competition.logo,
+        cached && cached.logo
+    ));
+
+    return {
+        id: id,
+        name: name,
+        country: country,
+        logo: logo
     };
 }
 
@@ -171,9 +325,21 @@ function normalizeMatch(game) {
 
     var home = game.homeCompetitor || {};
     var away = game.awayCompetitor || {};
-
-    var competition = game.competition || {};
     var sport = game.sport || {};
+
+    var competitionInfo = findCompetition(game);
+
+    var sportId = toNumber(firstValue(
+        game.sportId,
+        sport.id
+    ));
+
+    var sportName = toStringValue(firstValue(
+        game.sportName,
+        sport.name,
+        sportCache[String(sportId)] &&
+            sportCache[String(sportId)].name
+    ));
 
     var homeScore = firstValue(
         game.homeScore,
@@ -201,144 +367,99 @@ function normalizeMatch(game) {
     );
 
     var match = {
-        gameId: toNumber(
-            firstValue(
-                game.id,
-                game.gameId,
-                game.eventId
-            )
-        ),
+        gameId: toNumber(firstValue(
+            game.id,
+            game.gameId,
+            game.eventId
+        )),
 
-        sportId: toNumber(
-            firstValue(
-                game.sportId,
-                sport.id
-            )
-        ),
+        sportId: sportId,
 
-        sportName: toStringValue(
-            firstValue(
-                game.sportName,
-                sport.name
-            )
-        ),
+        sportName: sportName,
 
-        competitionId: toNumber(
-            firstValue(
-                game.competitionId,
-                competition.id
-            )
-        ),
+        competitionId: competitionInfo.id,
 
-        competition: toStringValue(
-            firstValue(
-                game.competitionName,
-                competition.name
-            )
-        ),
+        competition: competitionInfo.name || "Unknown Competition",
 
-        country: toStringValue(
-            firstValue(
-                game.countryName,
-                game.country,
-                competition.countryName
-            )
-        ),
+        country: competitionInfo.country,
 
-        season: toStringValue(game.season),
+        competitionLogo: competitionInfo.logo,
 
-        homeTeam: toStringValue(
-            firstValue(
-                game.homeCompetitorName,
-                home.name,
-                game.homeTeam
-            )
-        ),
+        season: toStringValue(firstValue(
+            game.seasonName,
+            game.season
+        )),
 
-        awayTeam: toStringValue(
-            firstValue(
-                game.awayCompetitorName,
-                away.name,
-                game.awayTeam
-            )
-        ),
+        homeTeam: toStringValue(firstValue(
+            game.homeCompetitorName,
+            home.name,
+            game.homeTeam
+        )),
 
-        homeTeamId: toNumber(
-            firstValue(
-                game.homeCompetitorId,
-                home.id
-            )
-        ),
+        awayTeam: toStringValue(firstValue(
+            game.awayCompetitorName,
+            away.name,
+            game.awayTeam
+        )),
 
-        awayTeamId: toNumber(
-            firstValue(
-                game.awayCompetitorId,
-                away.id
-            )
-        ),
+        homeTeamId: toNumber(firstValue(
+            game.homeCompetitorId,
+            home.id
+        )),
 
-        homeLogo: toStringValue(
-            firstValue(
-                game.homeCompetitorLogo,
-                home.logo,
-                home.image
-            )
-        ),
+        awayTeamId: toNumber(firstValue(
+            game.awayCompetitorId,
+            away.id
+        )),
 
-        awayLogo: toStringValue(
-            firstValue(
-                game.awayCompetitorLogo,
-                away.logo,
-                away.image
-            )
-        ),
+        homeLogo: toStringValue(firstValue(
+            game.homeCompetitorLogo,
+            home.logo,
+            home.image
+        )),
+
+        awayLogo: toStringValue(firstValue(
+            game.awayCompetitorLogo,
+            away.logo,
+            away.image
+        )),
 
         homeScore: homeScore === "" ? "" : toNumber(homeScore),
 
         awayScore: awayScore === "" ? "" : toNumber(awayScore),
 
-        timestamp: toNumber(
-            firstValue(
-                game.startTimeSeconds,
-                game.timestamp,
-                game.startTimestamp
-            )
-        ),
+        timestamp: toNumber(firstValue(
+            game.startTimeSeconds,
+            game.timestamp,
+            game.startTimestamp
+        )),
 
-        matchTimeMillis: toNumber(
-            firstValue(
-                game.startTimeMillis,
-                game.matchTimeMillis
-            )
-        ),
+        matchTimeMillis: toNumber(firstValue(
+            game.startTimeMillis,
+            game.matchTimeMillis
+        )),
 
         matchDate: toStringValue(gameDate),
 
         status: toStringValue(status),
 
-        shortStatus: toStringValue(
-            firstValue(
-                game.statusGroup,
-                game.shortStatus,
-                game.statusCode
-            )
-        ),
+        shortStatus: toStringValue(firstValue(
+            game.statusGroup,
+            game.shortStatus,
+            game.statusCode
+        )),
 
-        stadium: toStringValue(
-            firstValue(
-                game.venueName,
-                game.stadiumName,
-                game.venue
-            )
-        ),
+        stadium: toStringValue(firstValue(
+            game.venueName,
+            game.stadiumName,
+            game.venue
+        )),
 
-        goalEvents: normalizeGoalEvents(
-            firstValue(
-                game.goalEvents,
-                game.events,
-                []
-            )
-        ),
+        goalEvents: normalizeGoalEvents(firstValue(
+            game.goalEvents,
+            game.events,
+            []
+        )),
 
         streamUrl: ""
     };
@@ -359,16 +480,44 @@ function normalizeMatch(game) {
     return match;
 }
 
-function getResponseData(response) {
-    if (
-        response &&
-        response.data &&
-        typeof response.data === "object"
-    ) {
-        return response.data;
+function formatDate(date) {
+    var day = String(date.getDate());
+    var month = String(date.getMonth() + 1);
+    var year = String(date.getFullYear());
+
+    if (day.length < 2) {
+        day = "0" + day;
     }
 
-    return {};
+    if (month.length < 2) {
+        month = "0" + month;
+    }
+
+    return day + "/" + month + "/" + year;
+}
+
+function getDateRange(options) {
+    options = options || {};
+
+    if (options.startDate && options.endDate) {
+        return {
+            startDate: options.startDate,
+            endDate: options.endDate
+        };
+    }
+
+    var now = new Date();
+
+    var start = new Date(now.getTime());
+    start.setDate(start.getDate() - 1);
+
+    var end = new Date(now.getTime());
+    end.setDate(end.getDate() + 1);
+
+    return {
+        startDate: formatDate(start),
+        endDate: formatDate(end)
+    };
 }
 
 async function fetchCatalog() {
@@ -395,67 +544,19 @@ async function fetchCatalog() {
         ? data.competitions
         : [];
 
-    var liveGamesCount = toNumber(
-        firstValue(
-            data.liveGamesCount,
-            data.liveGames,
-            0
-        )
-    );
+    addSports(sports);
+    addCompetitions(competitions);
 
     return {
         provider: PROVIDER_NAME,
-
         sports: sports.map(normalizeSport),
-
         countries: countries,
-
         competitions: competitions.map(normalizeCompetition),
-
-        liveGamesCount: liveGamesCount
-    };
-}
-
-function formatDate(date) {
-    var day = String(date.getDate());
-    var month = String(date.getMonth() + 1);
-    var year = String(date.getFullYear());
-
-    if (day.length < 2) {
-        day = "0" + day;
-    }
-
-    if (month.length < 2) {
-        month = "0" + month;
-    }
-
-    return day + "/" + month + "/" + year;
-}
-
-function getDateRange(options) {
-    options = options || {};
-
-    var startDate = options.startDate;
-    var endDate = options.endDate;
-
-    if (startDate && endDate) {
-        return {
-            startDate: startDate,
-            endDate: endDate
-        };
-    }
-
-    var now = new Date();
-
-    var start = new Date(now.getTime());
-    start.setDate(start.getDate() - 1);
-
-    var end = new Date(now.getTime());
-    end.setDate(end.getDate() + 1);
-
-    return {
-        startDate: formatDate(start),
-        endDate: formatDate(end)
+        liveGamesCount: toNumber(firstValue(
+            data.liveGamesCount,
+            data.liveGames,
+            0
+        ))
     };
 }
 
@@ -473,7 +574,6 @@ async function fetchMatches(options) {
     }
 
     var range = getDateRange(options);
-
     var allMatches = [];
     var seen = {};
 
@@ -491,18 +591,39 @@ async function fetchMatches(options) {
                     langId: 1,
                     timezoneName: TIME_ZONE
                 },
-
                 timeout: 30000
             });
 
             var data = getResponseData(response);
+
+            // Populate lookup caches from this games response too.
+            addSports(data.sports);
+            addCompetitions(data.competitions);
 
             var games = Array.isArray(data.games)
                 ? data.games
                 : [];
 
             for (var j = 0; j < games.length; j++) {
-                var normalized = normalizeMatch(games[j]);
+                var game = games[j] || {};
+
+                // Some responses provide competition metadata
+                // separately, while others embed it in each game.
+                var inlineCompetition = game.competition || {};
+
+                if (
+                    getCompetitionId(game) &&
+                    getCompetitionName(game)
+                ) {
+                    addCompetitions([game]);
+                } else if (
+                    getCompetitionId(inlineCompetition) &&
+                    getCompetitionName(inlineCompetition)
+                ) {
+                    addCompetitions([inlineCompetition]);
+                }
+
+                var normalized = normalizeMatch(game);
 
                 if (!normalized.gameId) {
                     continue;
@@ -544,13 +665,26 @@ async function fetchGameDetails(gameId) {
             langId: 1,
             timezoneName: TIME_ZONE
         },
-
         timeout: 30000
     });
 
     var data = getResponseData(response);
 
+    addSports(data.sports);
+    addCompetitions(data.competitions);
+
     var game = data.game || data;
+
+    if (game.competition) {
+        addCompetitions([game.competition]);
+    }
+
+    if (
+        getCompetitionId(game) &&
+        getCompetitionName(game)
+    ) {
+        addCompetitions([game]);
+    }
 
     return normalizeMatch(game);
 }
